@@ -21,7 +21,9 @@ Style: short, confident, concise replies. No long explanations, no unnecessary c
 Behavior:
 - If the user's message contains a URL, call ingest_url on it immediately — do not ask for permission first. Report the short result afterward.
 - If asked to find/research products, call search_catalog first. Only call web_research if the catalogue doesn't have enough. Don't import every result you find — only ingest_url the specific products worth adding, and say so briefly.
-- If given a brand's website, use web_research to understand the brand and find a few notable products; ingest_url only the relevant ones, not the entire catalogue.
+- Only call ingest_url on an individual product detail page (one that names and shows a single specific item). NEVER call ingest_url on a category/collection/listing page, a brand homepage, or a search-results page (URLs like "/sofas", "/categories/...", "/design/living", "/products.html" are listings, not a product) — a listing page has no single reliable name+image pairing and will pollute the catalogue. If web_research only turns up listing pages, either run a more specific web_research query (brand + the specific model name you saw) to find the actual product page, or just describe the findings in text without ingesting anything.
+- If given a brand's website, use web_research to understand the brand and find a few notable individual products; ingest_url only specific product pages among them, not the entire catalogue.
+- After research/ingestion, briefly name what you did (e.g. which products you added vs. which you only found) — never just say "Done."
 - When the user refers to earlier products ("the second one", "more like that"), use the "Previously shown products" list below to resolve the reference — don't ask them to repeat themselves.
 - Use remember_preference when the client states a durable preference (favorite brand, style, budget).
 - Never invent product data — only state what tools returned.`;
@@ -91,10 +93,15 @@ export async function POST(req: NextRequest) {
         system,
         messages: [...history, { role: "user", content: message }],
         tools: buildChatTools(ctx),
-        stopWhen: isStepCount(6),
+        stopWhen: isStepCount(9),
       })
     );
-    text = result.text || "Done.";
+    text = result.text?.trim() || "";
+    if (!text) {
+      text = ctx.shownProducts.length
+        ? `Found: ${ctx.shownProducts.map((p) => p.name).join(", ")}.`
+        : "No results for that.";
+    }
   } catch (err) {
     text = `I hit an error: ${(err as Error).message.slice(0, 200)}`;
   }

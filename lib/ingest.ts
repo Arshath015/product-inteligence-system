@@ -13,6 +13,15 @@ export interface IngestResult {
   message: string;
 }
 
+// A generic name with no extractable image is a strong signal the URL was a
+// category/listing page, not a specific product — refuse rather than publish junk.
+const GENERIC_NAMES = new Set([
+  "sofa", "sofas", "chair", "chairs", "armchair", "armchairs", "lounge chair",
+  "dining chair", "table", "tables", "coffee table", "side table", "bed", "beds",
+  "light", "lighting", "lamp", "rug", "rugs", "accessory", "accessories",
+  "collection", "products", "design", "living", "indoor", "outdoor", "catalogue", "catalog",
+]);
+
 async function uniqueSlug(base: string): Promise<string> {
   const supabase = getSupabaseAdmin();
   const candidate = slugify(base) || "product";
@@ -38,6 +47,14 @@ export async function ingestProductUrl(url: string): Promise<IngestResult> {
       status: "failed",
       product: null,
       message: `Couldn't read that page (${(err as Error).message}).`,
+    };
+  }
+
+  if (GENERIC_NAMES.has(extracted.name.trim().toLowerCase()) && extracted.imageUrls.length === 0) {
+    return {
+      status: "failed",
+      product: null,
+      message: "That looks like a category or listing page, not a specific product — try a direct product page URL.",
     };
   }
 

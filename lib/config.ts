@@ -10,9 +10,8 @@ function collectGroqKeys(): string[] {
 export const config = {
   groq: {
     keys: collectGroqKeys(),
-    textModel: process.env.GROQ_TEXT_MODEL || "llama-3.3-70b-versatile",
-    visionModel:
-      process.env.GROQ_VISION_MODEL || "meta-llama/llama-4-scout-17b-16e-instruct",
+    textModel: process.env.GROQ_TEXT_MODEL || "openai/gpt-oss-120b",
+    visionModel: process.env.GROQ_VISION_MODEL || "qwen/qwen3.8-27b",
   },
   tavily: {
     apiKey: process.env.TAVILY_API_KEY || "",
