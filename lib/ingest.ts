@@ -1,0 +1,141 @@
+import { nanoid } from "nanoid";
+import { getSupabaseAdmin } from "@/lib/supabase/server";
+import { extractProductFromUrl } from "@/lib/extraction";
+import { resolveBrand, resolveDesigner, resolveCategory, findDuplicateProduct } from "@/lib/catalog";
+import { storeBestProductImage } from "@/lib/images";
+import { slugify } from "@/lib/slug";
+import { getProductWithRelations, logActivity } from "@/lib/products";
+import type { Product } from "@/lib/types";
+
+export interface IngestResult {
+  status: "created" | "duplicate_updated" | "duplicate_unchanged" | "failed";
+  product: Product | null;
+  message: string;
+}
+
+async function uniqueSlug(base: string): Promise<string> {
+  const supabase = getSupabaseAdmin();
+  const candidate = slugify(base) || "product";
+  const { data } = await supabase.from("products").select("id").eq("slug", candidate).maybeSingle();
+  if (!data) return candidate;
+  return `${candidate}-${nanoid(6)}`;
+}
+
+/**
+ * Full "paste a URL" pipeline: extract -> resolve brand/designer/category ->
+ * dedupe -> create or enrich -> persist images. Safe to call more than once
+ * for the same URL (idempotent via duplicate detection), which matters
+ * because a failed Groq key can cause the whole chat turn to retry.
+ */
+export async function ingestProductUrl(url: string): Promise<IngestResult> {
+  const supabase = getSupabaseAdmin();
+
+  let extracted;
+  try {
+    extracted = await extractProductFromUrl(url);
+  } catch (err) {
+    return {
+      status: "failed",
+      product: null,
+      message: `Couldn't read that page (${(err as Error).message}).`,
+    };
+  }
+
+  const [brandId, designerId, categoryId] = await Promise.all([
+    resolveBrand(extracted.brandName),
+    resolveDesigner(extracted.designerName),
+    resolveCategory(extracted.categoryHint),
+  ]);
+
+  const duplicate = await findDuplicateProduct({
+    canonicalUrl: extracted.canonicalUrl,
+    name: extracted.name,
+    brandId,
+  });
+
+  if (duplicate) {
+    const { data: existing } = await supabase
+      .from("products")
+      .select("*")
+      .eq("id", duplicate.productId)
+      .single();
+
+    const patch: Record<string, unknown> = {};
+    if (!existing.description && extracted.description) patch.description = extracted.description;
+    if (!existing.materials && extracted.materials) patch.materials = extracted.materials;
+    if (!existing.dimensions && extracted.dimensions) patch.dimensions = extracted.dimensions;
+    if (!existing.price_text && extracted.priceText) patch.price_text = extracted.priceText;
+    if (!existing.designer_id && designerId) patch.designer_id = designerId;
+    if (!existing.category_id && categoryId) patch.category_id = categoryId;
+    if (!existing.canonical_url && extracted.canonicalUrl) patch.canonical_url = extracted.canonicalUrl;
+
+    if (Object.keys(patch).length > 0) {
+      await supabase.from("products").update(patch).eq("id", existing.id);
+    }
+
+    const { data: hasPrimaryImage } = await supabase
+      .from("product_images")
+      .select("id")
+      .eq("product_id", existing.id)
+      .eq("is_primary", true)
+      .eq("status", "stored")
+      .maybeSingle();
+
+    if (!hasPrimaryImage && extracted.imageUrls.length > 0) {
+      await storeBestProductImage(existing.id, extracted.imageUrls, true);
+    }
+
+    await logActivity("duplicate_detected", "product", existing.id, {
+      source_url: url,
+      reason: duplicate.reason,
+    });
+
+    const updated = await getProductWithRelations(existing.id);
+    return {
+      status: Object.keys(patch).length > 0 ? "duplicate_updated" : "duplicate_unchanged",
+      product: updated,
+      message:
+        Object.keys(patch).length > 0
+          ? `Already in the catalogue — filled in missing details for "${existing.name}".`
+          : `Already in the catalogue: "${existing.name}".`,
+    };
+  }
+
+  const slug = await uniqueSlug(`${extracted.brandName ?? ""} ${extracted.name}`);
+  const { data: created, error } = await supabase
+    .from("products")
+    .insert({
+      name: extracted.name,
+      slug,
+      brand_id: brandId,
+      designer_id: designerId,
+      category_id: categoryId,
+      description: extracted.description,
+      materials: extracted.materials,
+      dimensions: extracted.dimensions,
+      price_text: extracted.priceText,
+      source_url: url,
+      canonical_url: extracted.canonicalUrl,
+      source_domain: extracted.sourceDomain,
+      extraction_status: "complete",
+    })
+    .select("id")
+    .single();
+
+  if (error || !created) {
+    return { status: "failed", product: null, message: "Couldn't save that product." };
+  }
+
+  if (extracted.imageUrls.length > 0) {
+    await storeBestProductImage(created.id, extracted.imageUrls, true);
+  }
+
+  await logActivity("product_created", "product", created.id, { source_url: url });
+
+  const product = await getProductWithRelations(created.id);
+  return {
+    status: "created",
+    product,
+    message: `Added "${extracted.name}"${extracted.brandName ? ` by ${extracted.brandName}` : ""} to the catalogue.`,
+  };
+}
