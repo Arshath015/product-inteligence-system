@@ -1,23 +1,39 @@
 @import "tailwindcss";
 
 :root {
-  --background: #f7f5f1;
-  --surface: #ffffff;
-  --foreground: #211e1a;
-  --muted: #847c70;
-  --border: #e7e2d9;
-  --accent: #211e1a;
-  --accent-foreground: #f7f5f1;
+  /* Deep, warm dark palette — charcoal/warm-black base with a muted bronze-gold accent.
+     Each zone gets its own tone so header/catalogue/chat read as distinct regions. */
+  --background: #17140f; /* catalogue canvas — warm charcoal */
+  --surface: #211e19; /* product cards, bubbles, inputs — consistent across zones */
+  --surface-raised: #2a2419; /* modals, popovers */
+  --header: #0c0b09; /* top nav — near-black, anchors the layout */
+  --chat-panel: #141519; /* chat column — cool dark slate, deliberately distinct from the warm catalogue */
+  --foreground: #f1ebe0; /* warm off-white text */
+  --muted: #9a8f7e; /* secondary text */
+  --border: #332c21; /* hairline borders */
+  --border-strong: #463c2c;
+  --accent: #c7a157; /* muted bronze-gold — primary actions */
+  --accent-hover: #d6b56e;
+  --accent-foreground: #19140c; /* text on accent-filled surfaces */
+  --danger: #e2685f;
+  --danger-foreground: #2a0f0c;
 }
 
 @theme inline {
   --color-background: var(--background);
   --color-surface: var(--surface);
+  --color-surface-raised: var(--surface-raised);
+  --color-header: var(--header);
+  --color-chat-panel: var(--chat-panel);
   --color-foreground: var(--foreground);
   --color-muted: var(--muted);
   --color-border: var(--border);
+  --color-border-strong: var(--border-strong);
   --color-accent: var(--accent);
+  --color-accent-hover: var(--accent-hover);
   --color-accent-foreground: var(--accent-foreground);
+  --color-danger: var(--danger);
+  --color-danger-foreground: var(--danger-foreground);
   --font-sans: var(--font-inter);
   --font-serif: var(--font-fraunces);
 }
@@ -26,21 +42,43 @@
   border-color: var(--border);
 }
 
+html {
+  color-scheme: dark;
+}
+
 body {
   background: var(--background);
   color: var(--foreground);
 }
 
+::selection {
+  background: color-mix(in srgb, var(--accent) 35%, transparent);
+  color: var(--foreground);
+}
+
 ::-webkit-scrollbar {
-  width: 8px;
-  height: 8px;
+  width: 9px;
+  height: 9px;
 }
 ::-webkit-scrollbar-thumb {
-  background: #d8d2c6;
+  background: var(--border-strong);
   border-radius: 8px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--accent);
 }
 ::-webkit-scrollbar-track {
   background: transparent;
+}
+
+input::placeholder,
+textarea::placeholder {
+  color: var(--muted);
+}
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 
 .line-clamp-2 {

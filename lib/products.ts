@@ -45,7 +45,8 @@ export async function listProducts(filters: ProductFilters): Promise<{ products:
   const offset = filters.offset ?? 0;
 
   let query = supabase.from("products").select(SELECT_WITH_RELATIONS, { count: "exact" });
-  query = query.eq("status", filters.status ?? "published");
+  const status = filters.status ?? "published";
+  if (status !== "all") query = query.eq("status", status);
 
   if (filters.categorySlug) {
     const { data: cat } = await supabase

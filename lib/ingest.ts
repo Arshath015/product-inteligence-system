@@ -99,7 +99,9 @@ export async function ingestProductUrl(url: string): Promise<IngestResult> {
       .maybeSingle();
 
     if (!hasPrimaryImage && extracted.imageUrls.length > 0) {
-      await storeBestProductImage(existing.id, extracted.imageUrls, true);
+      await storeBestProductImage(existing.id, extracted.imageUrls, true, {
+        validateWithVision: extracted.imagesLowConfidence,
+      });
     }
 
     await logActivity("duplicate_detected", "product", existing.id, {
@@ -144,7 +146,9 @@ export async function ingestProductUrl(url: string): Promise<IngestResult> {
   }
 
   if (extracted.imageUrls.length > 0) {
-    await storeBestProductImage(created.id, extracted.imageUrls, true);
+    await storeBestProductImage(created.id, extracted.imageUrls, true, {
+      validateWithVision: extracted.imagesLowConfidence,
+    });
   }
 
   await logActivity("product_created", "product", created.id, { source_url: url });

@@ -2,6 +2,7 @@
 
 import type { ChatMessageVM } from "@/components/chat/ChatContext";
 import { ChatProductCard } from "@/components/chat/ChatProductCard";
+import { LinkifiedText } from "@/components/chat/LinkifiedText";
 import type { Product } from "@/lib/types";
 
 export function MessageBubble({
@@ -26,17 +27,17 @@ export function MessageBubble({
   }
 
   return (
-    <div className={`flex ${isUser ? "justify-end" : "justify-start"}`}>
-      <div className={`max-w-[88%] space-y-2 ${isUser ? "items-end" : "items-start"}`}>
+    <div className={`flex w-full min-w-0 ${isUser ? "justify-end" : "justify-start"}`}>
+      <div className={`min-w-0 max-w-[88%] space-y-2 ${isUser ? "items-end" : "items-start"}`}>
         <div
-          className={`whitespace-pre-wrap rounded-2xl px-4 py-2.5 text-sm leading-relaxed ${
-            isUser ? "bg-foreground text-background" : "bg-surface text-foreground"
+          className={`min-w-0 overflow-hidden whitespace-pre-wrap break-words rounded-2xl px-4 py-2.5 text-sm leading-relaxed [overflow-wrap:anywhere] ${
+            isUser ? "bg-accent text-accent-foreground" : "bg-surface text-foreground"
           }`}
         >
-          {message.content}
+          <LinkifiedText text={message.content} isUser={isUser} />
         </div>
         {message.products && message.products.length > 0 && (
-          <div className="flex flex-col gap-2">
+          <div className="flex min-w-0 flex-col gap-2">
             {message.products.map((p) => (
               <ChatProductCard key={p.id} product={p} onOpen={onOpenProduct} />
             ))}

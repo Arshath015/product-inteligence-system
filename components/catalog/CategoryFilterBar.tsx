@@ -20,7 +20,7 @@ export function CategoryFilterBar({
       <button
         onClick={() => onSelect(null)}
         className={`flex-shrink-0 rounded-full border px-3.5 py-1.5 text-xs transition-colors ${
-          active === null ? "border-foreground bg-foreground text-background" : "border-border text-muted hover:text-foreground"
+          active === null ? "border-accent bg-accent text-accent-foreground" : "border-border text-muted hover:border-accent/40 hover:text-foreground"
         }`}
       >
         All
@@ -32,7 +32,7 @@ export function CategoryFilterBar({
             key={c.id}
             onClick={() => onSelect(c.slug)}
             className={`flex-shrink-0 rounded-full border px-3.5 py-1.5 text-xs transition-colors ${
-              active === c.slug ? "border-foreground bg-foreground text-background" : "border-border text-muted hover:text-foreground"
+              active === c.slug ? "border-accent bg-accent text-accent-foreground" : "border-border text-muted hover:border-accent/40 hover:text-foreground"
             }`}
           >
             {c.name} <span className="opacity-60">{c.product_count}</span>

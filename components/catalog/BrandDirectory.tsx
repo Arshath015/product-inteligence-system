@@ -24,14 +24,14 @@ export function BrandDirectory() {
     <div className="px-6 py-6">
       <div className="mb-5 flex items-center justify-between gap-4">
         <div>
-          <h1 className="font-serif text-2xl">Brands</h1>
+          <h1 className="font-serif text-2xl text-foreground">Brands</h1>
           <p className="text-sm text-muted">{brands.length} brands</p>
         </div>
         <input
           value={q}
           onChange={(e) => setQ(e.target.value)}
           placeholder="Search brands…"
-          className="w-56 rounded-full border border-border bg-surface px-4 py-1.5 text-sm outline-none placeholder:text-muted"
+          className="w-56 rounded-full border border-border bg-surface px-4 py-1.5 text-sm text-foreground outline-none transition-colors placeholder:text-muted focus:border-accent"
         />
       </div>
 
@@ -51,9 +51,9 @@ export function BrandDirectory() {
             <Link
               key={b.id}
               href={`/brands/${b.id}`}
-              className="flex flex-col gap-1 rounded-xl border border-border bg-surface p-4 transition-colors hover:border-foreground/30"
+              className="flex flex-col gap-1 rounded-xl border border-border bg-surface p-4 transition-colors hover:border-accent/50"
             >
-              <p className="font-serif text-base">{b.name}</p>
+              <p className="font-serif text-base text-foreground">{b.name}</p>
               <p className="text-xs text-muted">
                 {b.product_count} product{b.product_count === 1 ? "" : "s"}
                 {b.country ? ` · ${b.country}` : ""}

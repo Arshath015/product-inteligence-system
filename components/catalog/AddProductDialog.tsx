@@ -42,19 +42,29 @@ export function AddProductDialog({ onClose }: { onClose: () => void }) {
     }
   };
 
+  const inputClass =
+    "w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground outline-none transition-colors focus:border-accent";
+
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" onClick={onClose}>
-      <div className="w-full max-w-md rounded-2xl bg-surface p-6 shadow-xl" onClick={(e) => e.stopPropagation()}>
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4" onClick={onClose}>
+      <div
+        className="w-full max-w-md rounded-2xl border border-border bg-surface-raised p-6 shadow-2xl shadow-black/50"
+        onClick={(e) => e.stopPropagation()}
+      >
         <div className="mb-4 flex gap-2">
           <button
             onClick={() => setMode("url")}
-            className={`rounded-full px-3 py-1 text-xs ${mode === "url" ? "bg-foreground text-background" : "border border-border"}`}
+            className={`rounded-full px-3 py-1 text-xs transition-colors ${
+              mode === "url" ? "bg-accent text-accent-foreground" : "border border-border text-muted hover:text-foreground"
+            }`}
           >
             From URL
           </button>
           <button
             onClick={() => setMode("manual")}
-            className={`rounded-full px-3 py-1 text-xs ${mode === "manual" ? "bg-foreground text-background" : "border border-border"}`}
+            className={`rounded-full px-3 py-1 text-xs transition-colors ${
+              mode === "manual" ? "bg-accent text-accent-foreground" : "border border-border text-muted hover:text-foreground"
+            }`}
           >
             Manual entry
           </button>
@@ -63,7 +73,7 @@ export function AddProductDialog({ onClose }: { onClose: () => void }) {
         {mode === "url" ? (
           <div className="space-y-3">
             <input
-              className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm"
+              className={inputClass}
               placeholder="https://brand.com/product/..."
               value={url}
               onChange={(e) => setUrl(e.target.value)}
@@ -71,7 +81,7 @@ export function AddProductDialog({ onClose }: { onClose: () => void }) {
             <button
               onClick={submitUrl}
               disabled={busy}
-              className="w-full rounded-full bg-foreground py-2 text-sm text-background disabled:opacity-50"
+              className="w-full rounded-full bg-accent py-2 text-sm font-medium text-accent-foreground transition-colors hover:bg-accent-hover disabled:opacity-50"
             >
               {busy ? "Extracting…" : "Add product"}
             </button>
@@ -79,32 +89,32 @@ export function AddProductDialog({ onClose }: { onClose: () => void }) {
         ) : (
           <div className="space-y-3">
             <input
-              className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm"
+              className={inputClass}
               placeholder="Product name"
               value={form.name}
               onChange={(e) => setForm({ ...form, name: e.target.value })}
             />
             <input
-              className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm"
+              className={inputClass}
               placeholder="Brand"
               value={form.brandName}
               onChange={(e) => setForm({ ...form, brandName: e.target.value })}
             />
             <textarea
-              className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm"
+              className={inputClass}
               placeholder="Description"
               value={form.description}
               onChange={(e) => setForm({ ...form, description: e.target.value })}
               rows={3}
             />
             <input
-              className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm"
+              className={inputClass}
               placeholder="Image URL"
               value={form.imageUrl}
               onChange={(e) => setForm({ ...form, imageUrl: e.target.value })}
             />
             <input
-              className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm"
+              className={inputClass}
               placeholder="Source URL"
               value={form.sourceUrl}
               onChange={(e) => setForm({ ...form, sourceUrl: e.target.value })}
@@ -112,7 +122,7 @@ export function AddProductDialog({ onClose }: { onClose: () => void }) {
             <button
               onClick={submitManual}
               disabled={busy}
-              className="w-full rounded-full bg-foreground py-2 text-sm text-background disabled:opacity-50"
+              className="w-full rounded-full bg-accent py-2 text-sm font-medium text-accent-foreground transition-colors hover:bg-accent-hover disabled:opacity-50"
             >
               {busy ? "Saving…" : "Add product"}
             </button>

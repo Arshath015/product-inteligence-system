@@ -42,13 +42,13 @@ export function ChatPanel() {
   };
 
   return (
-    <div className="flex h-full flex-col">
+    <div className="flex h-full min-w-0 flex-col overflow-hidden">
       <div className="border-b border-border px-5 py-4">
         <p className="font-serif text-lg tracking-tight">ALTOSSA</p>
         <p className="text-xs text-muted">Luxury design research assistant</p>
       </div>
 
-      <div ref={scrollRef} className="flex-1 space-y-4 overflow-y-auto px-4 py-4">
+      <div ref={scrollRef} className="min-w-0 flex-1 space-y-4 overflow-x-hidden overflow-y-auto px-4 py-4">
         {messages.length === 0 && (
           <div className="mt-6 space-y-2 text-sm text-muted">
             <p>Paste a product URL, ask for a style, or describe what you&apos;re looking for.</p>
@@ -93,12 +93,12 @@ export function ChatPanel() {
             }}
             rows={1}
             placeholder="Message ALTOSSA…"
-            className="flex-1 resize-none bg-transparent px-1 py-1 text-sm outline-none placeholder:text-muted"
+            className="min-w-0 flex-1 resize-none bg-transparent px-1 py-1 text-sm outline-none placeholder:text-muted"
           />
           <button
             type="submit"
             disabled={sending || !input.trim()}
-            className="flex h-8 items-center rounded-full bg-foreground px-3 text-xs font-medium text-background disabled:opacity-40"
+            className="flex h-8 items-center rounded-full bg-accent px-3 text-xs font-medium text-accent-foreground transition-colors hover:bg-accent-hover disabled:opacity-40"
           >
             Send
           </button>

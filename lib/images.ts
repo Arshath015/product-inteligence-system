@@ -1,6 +1,7 @@
 import { nanoid } from "nanoid";
 import { getSupabaseAdmin } from "@/lib/supabase/server";
 import { config } from "@/lib/config";
+import { isLikelyProductPhoto } from "@/lib/visionValidate";
 
 const MAX_BYTES = 8 * 1024 * 1024;
 const BROWSER_HEADERS = {
@@ -31,22 +32,33 @@ async function tryDownload(url: string): Promise<{ bytes: Buffer; contentType: s
   }
 }
 
+const MAX_VISION_CHECKS = 4;
+
 /**
  * Tries each candidate image URL in order (best source first), downloads
  * the bytes server-side, and persists the first one that succeeds in
  * Supabase Storage. Never substitutes an unrelated image — if every
- * candidate fails, it records a "missing" row instead.
+ * candidate fails (or fails a vision sanity-check, when requested), it
+ * records a "missing" row instead.
  */
 export async function storeBestProductImage(
   productId: string,
   candidateUrls: string[],
-  isPrimary: boolean
+  isPrimary: boolean,
+  opts: { validateWithVision?: boolean } = {}
 ) {
   const supabase = getSupabaseAdmin();
+  let visionChecks = 0;
 
   for (const url of candidateUrls) {
     const downloaded = await tryDownload(url);
     if (!downloaded) continue;
+
+    if (opts.validateWithVision && visionChecks < MAX_VISION_CHECKS) {
+      visionChecks++;
+      const ok = await isLikelyProductPhoto(downloaded.bytes, downloaded.contentType);
+      if (!ok) continue;
+    }
 
     const ext = extFromContentType(downloaded.contentType);
     const path = `${productId}/${nanoid()}.${ext}`;

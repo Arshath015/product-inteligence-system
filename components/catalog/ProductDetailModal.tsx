@@ -11,6 +11,9 @@ function primaryImage(p: Product) {
   return img?.status === "stored" ? img.public_url : null;
 }
 
+const inputClass =
+  "w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground outline-none transition-colors focus:border-accent";
+
 export function ProductDetailModal({ product, onClose }: { product: Product; onClose: () => void }) {
   const { bumpCatalog } = useChat();
   const [editing, setEditing] = useState(false);
@@ -60,20 +63,20 @@ export function ProductDetailModal({ product, onClose }: { product: Product; onC
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" onClick={onClose}>
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4" onClick={onClose}>
       <div
-        className="max-h-[90vh] w-full max-w-2xl overflow-y-auto rounded-2xl bg-surface shadow-xl"
+        className="max-h-[90vh] w-full max-w-2xl overflow-y-auto rounded-2xl border border-border bg-surface-raised shadow-2xl shadow-black/50"
         onClick={(e) => e.stopPropagation()}
       >
-        <div className="relative aspect-[16/10] w-full bg-background">
+        <div className="relative h-80 w-full bg-background sm:h-96">
           {img ? (
-            <Image src={img} alt={product.name} fill unoptimized className="object-cover" />
+            <Image src={img} alt={product.name} fill unoptimized className="object-contain p-4" />
           ) : (
             <div className="flex h-full items-center justify-center text-muted">Image unavailable</div>
           )}
           <button
             onClick={onClose}
-            className="absolute right-3 top-3 flex h-8 w-8 items-center justify-center rounded-full bg-background/90 text-sm"
+            className="absolute right-3 top-3 flex h-8 w-8 items-center justify-center rounded-full border border-border bg-surface/90 text-sm text-foreground transition-colors hover:border-accent/50"
           >
             ✕
           </button>
@@ -83,32 +86,32 @@ export function ProductDetailModal({ product, onClose }: { product: Product; onC
           {editing ? (
             <div className="space-y-3">
               <input
-                className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm"
+                className={inputClass}
                 value={form.name}
                 onChange={(e) => setForm({ ...form, name: e.target.value })}
                 placeholder="Name"
               />
               <textarea
-                className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm"
+                className={inputClass}
                 value={form.description}
                 onChange={(e) => setForm({ ...form, description: e.target.value })}
                 placeholder="Description"
                 rows={3}
               />
               <input
-                className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm"
+                className={inputClass}
                 value={form.materials}
                 onChange={(e) => setForm({ ...form, materials: e.target.value })}
                 placeholder="Materials"
               />
               <input
-                className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm"
+                className={inputClass}
                 value={form.dimensions}
                 onChange={(e) => setForm({ ...form, dimensions: e.target.value })}
                 placeholder="Dimensions"
               />
               <input
-                className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm"
+                className={inputClass}
                 value={form.priceText}
                 onChange={(e) => setForm({ ...form, priceText: e.target.value })}
                 placeholder="Price"
@@ -117,11 +120,14 @@ export function ProductDetailModal({ product, onClose }: { product: Product; onC
                 <button
                   onClick={save}
                   disabled={busy}
-                  className="rounded-full bg-foreground px-4 py-1.5 text-xs text-background disabled:opacity-50"
+                  className="rounded-full bg-accent px-4 py-1.5 text-xs font-medium text-accent-foreground transition-colors hover:bg-accent-hover disabled:opacity-50"
                 >
                   Save
                 </button>
-                <button onClick={() => setEditing(false)} className="rounded-full border border-border px-4 py-1.5 text-xs">
+                <button
+                  onClick={() => setEditing(false)}
+                  className="rounded-full border border-border px-4 py-1.5 text-xs text-muted hover:text-foreground"
+                >
                   Cancel
                 </button>
               </div>
@@ -130,35 +136,37 @@ export function ProductDetailModal({ product, onClose }: { product: Product; onC
             <>
               <div>
                 <p className="text-xs uppercase tracking-wide text-muted">{product.brand?.name ?? "Unknown brand"}</p>
-                <h2 className="font-serif text-2xl">{product.name}</h2>
+                <h2 className="font-serif text-2xl text-foreground">{product.name}</h2>
                 {product.designer?.name && <p className="text-sm text-muted">Designed by {product.designer.name}</p>}
               </div>
 
-              {product.description && <p className="text-sm leading-relaxed">{product.description}</p>}
+              {product.description && (
+                <p className="text-sm leading-relaxed text-foreground/90">{product.description}</p>
+              )}
 
               <dl className="grid grid-cols-2 gap-3 text-sm">
                 {product.category?.name && (
                   <div>
                     <dt className="text-xs text-muted">Category</dt>
-                    <dd>{product.category.name}</dd>
+                    <dd className="text-foreground">{product.category.name}</dd>
                   </div>
                 )}
                 {product.materials && (
                   <div>
                     <dt className="text-xs text-muted">Materials</dt>
-                    <dd>{product.materials}</dd>
+                    <dd className="text-foreground">{product.materials}</dd>
                   </div>
                 )}
                 {product.dimensions && (
                   <div>
                     <dt className="text-xs text-muted">Dimensions</dt>
-                    <dd>{product.dimensions}</dd>
+                    <dd className="text-foreground">{product.dimensions}</dd>
                   </div>
                 )}
                 {product.price_text && (
                   <div>
                     <dt className="text-xs text-muted">Price</dt>
-                    <dd>{product.price_text}</dd>
+                    <dd className="text-foreground">{product.price_text}</dd>
                   </div>
                 )}
               </dl>
@@ -168,23 +176,30 @@ export function ProductDetailModal({ product, onClose }: { product: Product; onC
                   href={product.source_url}
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="inline-block text-sm underline underline-offset-2"
+                  className="inline-block text-sm text-accent underline decoration-dotted underline-offset-2 hover:decoration-solid"
                 >
                   View original source →
                 </a>
               )}
 
               <div className="flex gap-2 pt-2">
-                <button onClick={() => setEditing(true)} className="rounded-full border border-border px-4 py-1.5 text-xs">
+                <button
+                  onClick={() => setEditing(true)}
+                  className="rounded-full border border-border px-4 py-1.5 text-xs text-muted hover:border-accent/50 hover:text-foreground"
+                >
                   Edit
                 </button>
-                <button onClick={archive} disabled={busy} className="rounded-full border border-border px-4 py-1.5 text-xs">
+                <button
+                  onClick={archive}
+                  disabled={busy}
+                  className="rounded-full border border-border px-4 py-1.5 text-xs text-muted hover:border-accent/50 hover:text-foreground"
+                >
                   Archive
                 </button>
                 <button
                   onClick={remove}
                   disabled={busy}
-                  className="rounded-full border border-red-200 px-4 py-1.5 text-xs text-red-600"
+                  className="rounded-full border border-danger/40 px-4 py-1.5 text-xs text-danger hover:bg-danger/10"
                 >
                   Delete
                 </button>

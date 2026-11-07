@@ -36,7 +36,7 @@ export function CatalogueView() {
     <div className="flex min-h-full flex-col">
       <div className="flex items-center justify-between gap-4 px-6 pt-6">
         <div>
-          <h1 className="font-serif text-2xl">Catalogue</h1>
+          <h1 className="font-serif text-2xl text-foreground">Catalogue</h1>
           <p className="text-sm text-muted">{products.length} pieces</p>
         </div>
         <div className="flex items-center gap-2">
@@ -44,11 +44,11 @@ export function CatalogueView() {
             value={q}
             onChange={(e) => setQ(e.target.value)}
             placeholder="Search products…"
-            className="w-56 rounded-full border border-border bg-surface px-4 py-1.5 text-sm outline-none placeholder:text-muted"
+            className="w-56 rounded-full border border-border bg-surface px-4 py-1.5 text-sm text-foreground outline-none transition-colors placeholder:text-muted focus:border-accent"
           />
           <button
             onClick={() => setShowAdd(true)}
-            className="rounded-full bg-foreground px-4 py-1.5 text-xs text-background"
+            className="rounded-full bg-accent px-4 py-1.5 text-xs font-medium text-accent-foreground transition-colors hover:bg-accent-hover"
           >
             + Add
           </button>

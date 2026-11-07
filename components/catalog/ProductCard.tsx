@@ -14,16 +14,16 @@ export function ProductCard({ product, onOpen }: { product: Product; onOpen: (p:
   return (
     <button
       onClick={() => onOpen(product)}
-      className="group flex flex-col overflow-hidden rounded-2xl border border-border bg-surface text-left transition-shadow hover:shadow-md"
+      className="group flex min-w-0 flex-col overflow-hidden rounded-2xl border border-border bg-surface text-left transition-all hover:border-accent/40 hover:shadow-lg hover:shadow-black/20"
     >
-      <div className="relative aspect-[4/5] w-full overflow-hidden bg-background">
+      <div className="relative h-56 w-full overflow-hidden bg-background sm:h-64">
         {img ? (
           <Image
             src={img}
             alt={product.name}
             fill
             unoptimized
-            className="object-cover transition-transform duration-300 group-hover:scale-105"
+            className="object-contain p-3 transition-transform duration-300 group-hover:scale-[1.04]"
           />
         ) : (
           <div className="flex h-full w-full flex-col items-center justify-center gap-1 text-muted">
@@ -32,8 +32,10 @@ export function ProductCard({ product, onOpen }: { product: Product; onOpen: (p:
           </div>
         )}
       </div>
-      <div className="flex flex-1 flex-col gap-1 p-3.5">
-        <p className="text-[11px] uppercase tracking-wide text-muted">{product.brand?.name ?? "Unknown brand"}</p>
+      <div className="flex flex-1 flex-col gap-1 border-t border-border p-3.5">
+        <p className="truncate text-[11px] uppercase tracking-wide text-muted">
+          {product.brand?.name ?? "Unknown brand"}
+        </p>
         <p className="line-clamp-2 font-serif text-[15px] leading-snug text-foreground">{product.name}</p>
         {product.category?.name && <p className="text-xs text-muted">{product.category.name}</p>}
       </div>

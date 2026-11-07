@@ -54,8 +54,85 @@ interface PageSignals {
   metaDescription: string | null;
   canonicalUrl: string | null;
   ogImages: string[];
+  galleryImages: string[];
   jsonLd: unknown[];
   textSnippet: string;
+}
+
+// Filenames/paths containing these tokens are almost never the product photo itself.
+const IMAGE_BLACKLIST = [
+  "logo", "icon", "favicon", "sprite", "banner", "badge", "placeholder",
+  "avatar", "social-share", "social_share", "og-image", "og_image",
+  "default-image", "default_image", "wordmark", "brandmark",
+];
+
+const STRUCTURAL_PATH_WORDS = new Set([
+  "en", "us", "uk", "it", "fr", "de", "www", "product", "products", "p",
+  "category", "categories", "collection", "collections", "shop", "store",
+  "catalogue", "catalog", "page", "pages", "detail", "details", "index",
+]);
+
+function tokensFrom(text: string): string[] {
+  return text
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .filter((t) => t.length > 2 && !/^\d+$/.test(t));
+}
+
+/** Tokens likely to identify THIS product: from the page title and URL path segments. */
+function buildNameHints(title: string | null, url: string): string[] {
+  const hints = new Set<string>();
+  if (title) {
+    tokensFrom(title.split(/[|\-–—]/)[0]).forEach((t) => hints.add(t));
+  }
+  try {
+    const segs = new URL(url).pathname.split("/").filter(Boolean);
+    for (const seg of segs) {
+      tokensFrom(seg.replace(/-\d+$/, "")).forEach((t) => {
+        if (!STRUCTURAL_PATH_WORDS.has(t)) hints.add(t);
+      });
+    }
+  } catch {
+    // ignore
+  }
+  return [...hints];
+}
+
+interface ScoredImage {
+  url: string;
+  score: number;
+}
+
+function scoreImage(url: string, tier: number, hints: string[], brandTokens: string[]): number {
+  const lower = url.toLowerCase();
+  if (IMAGE_BLACKLIST.some((k) => lower.includes(k))) return -100;
+
+  let score = -tier * 3; // lower tier (more authoritative source) scores higher
+  const matchedHint = hints.some((h) => lower.includes(h));
+  if (matchedHint) score += 10;
+
+  const matchedBrandOnly = !matchedHint && brandTokens.some((b) => lower.includes(b));
+  if (matchedBrandOnly) score -= 6; // likely a brand lifestyle/banner shot, not this product
+
+  if (/\d{3,4}x\d{3,4}/.test(lower)) score += 1; // explicit dimensions suggest a real asset, not a tiny icon
+  return score;
+}
+
+function rankImageCandidates(
+  tiers: { urls: string[]; tier: number }[],
+  hints: string[],
+  brandTokens: string[]
+): ScoredImage[] {
+  const seen = new Map<string, ScoredImage>();
+  for (const { urls, tier } of tiers) {
+    for (const url of urls) {
+      if (seen.has(url)) continue;
+      seen.set(url, { url, score: scoreImage(url, tier, hints, brandTokens) });
+    }
+  }
+  return [...seen.values()]
+    .filter((c) => c.score > -100)
+    .sort((a, b) => b.score - a.score);
 }
 
 async function fetchPageSignals(url: string): Promise<PageSignals> {
@@ -99,6 +176,21 @@ async function fetchPageSignals(url: string): Promise<PageSignals> {
     }
   });
 
+  // Real <img> tags on the page — the only signal available on sites that
+  // don't mark products up with JSON-LD and only expose a generic og:image.
+  const galleryImages: string[] = [];
+  $("img").each((_, el) => {
+    const raw =
+      $(el).attr("src") ||
+      $(el).attr("data-src") ||
+      $(el).attr("data-lazy-src") ||
+      $(el).attr("data-original") ||
+      ($(el).attr("srcset") || "").split(",")[0]?.trim().split(" ")[0];
+    if (!raw || raw.startsWith("data:")) return;
+    const abs = absolutize(raw, finalUrl);
+    if (abs) galleryImages.push(abs);
+  });
+
   const bodyText = $("body").text().replace(/\s+/g, " ").trim().slice(0, 6000);
 
   return {
@@ -108,6 +200,7 @@ async function fetchPageSignals(url: string): Promise<PageSignals> {
     metaDescription,
     canonicalUrl,
     ogImages,
+    galleryImages,
     jsonLd,
     textSnippet: bodyText,
   };
@@ -172,9 +265,7 @@ export async function extractProductFromUrl(url: string): Promise<ExtractedProdu
   }
 
   const jsonLdImages = signals ? imagesFromJsonLd(signals.jsonLd, finalUrl) : [];
-  const candidateImages = Array.from(
-    new Set([...jsonLdImages, ...(signals?.ogImages ?? []), ...fallbackImages])
-  ).slice(0, 8);
+  const nameHints = buildNameHints(signals?.title ?? null, finalUrl);
 
   const context = signals
     ? [
@@ -203,6 +294,27 @@ export async function extractProductFromUrl(url: string): Promise<ExtractedProdu
     }
   })();
 
+  // Re-score with the model's resolved name/brand now that we have them —
+  // more precise than the page-title/URL-slug hints alone.
+  const hints = Array.from(new Set([...nameHints, ...tokensFrom(object.name)]));
+  const brandTokens = object.brandName ? tokensFrom(object.brandName) : host ? tokensFrom(host) : [];
+
+  const ranked = rankImageCandidates(
+    [
+      { urls: jsonLdImages, tier: 0 },
+      { urls: signals?.galleryImages ?? [], tier: 1 },
+      { urls: [...(signals?.ogImages ?? []), ...fallbackImages], tier: 2 },
+    ],
+    hints,
+    brandTokens
+  );
+
+  const imageUrls = ranked.slice(0, 10).map((c) => c.url);
+  // No candidate matched the product's own name/category at all — the only
+  // images we have are generic (brand banner, lifestyle shot, etc.), so
+  // whatever we pick should get a vision sanity-check before being saved.
+  const imagesLowConfidence = ranked.length === 0 || ranked[0].score < 5;
+
   return {
     name: object.name,
     brandName: object.brandName,
@@ -212,7 +324,8 @@ export async function extractProductFromUrl(url: string): Promise<ExtractedProdu
     materials: object.materials,
     dimensions: object.dimensions,
     priceText: object.priceText,
-    imageUrls: candidateImages,
+    imageUrls,
+    imagesLowConfidence,
     canonicalUrl: signals?.canonicalUrl ?? finalUrl,
     sourceDomain: host,
   };

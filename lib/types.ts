@@ -70,6 +70,7 @@ export interface ExtractedProductData {
   dimensions: string | null;
   priceText: string | null;
   imageUrls: string[];
+  imagesLowConfidence: boolean;
   canonicalUrl: string | null;
   sourceDomain: string | null;
 }

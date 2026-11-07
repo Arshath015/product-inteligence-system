@@ -33,10 +33,15 @@ export function BrandDetailView({ brandId }: { brandId: string }) {
         <Link href="/brands" className="text-xs text-muted hover:text-foreground">
           ← All brands
         </Link>
-        <h1 className="mt-2 font-serif text-2xl">{brand.name}</h1>
+        <h1 className="mt-2 font-serif text-2xl text-foreground">{brand.name}</h1>
         {brand.description && <p className="mt-1 max-w-xl text-sm text-muted">{brand.description}</p>}
         {brand.website_url && (
-          <a href={brand.website_url} target="_blank" rel="noopener noreferrer" className="mt-1 inline-block text-sm underline">
+          <a
+            href={brand.website_url}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="mt-1 inline-block max-w-full break-all text-sm text-accent underline decoration-dotted underline-offset-2 hover:decoration-solid"
+          >
             {brand.website_url}
           </a>
         )}

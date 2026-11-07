@@ -2,15 +2,70 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { ChatProvider, useChat } from "@/components/chat/ChatContext";
 import { ChatPanel } from "@/components/chat/ChatPanel";
 import { ProductDetailModal } from "@/components/catalog/ProductDetailModal";
+
+const MIN_WIDTH = 320;
+const MAX_WIDTH = 640;
+const DEFAULT_WIDTH = 400;
+const STORAGE_KEY = "altossa-chat-width";
+const COLLAPSED_KEY = "altossa-chat-collapsed";
 
 function Shell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const { selectedProduct, closeProduct } = useChat();
   const [mobileView, setMobileView] = useState<"catalogue" | "chat">("catalogue");
+  const [chatWidth, setChatWidth] = useState(DEFAULT_WIDTH);
+  const [collapsed, setCollapsed] = useState(false);
+  const [hydrated, setHydrated] = useState(false);
+  const dragging = useRef(false);
+
+  useEffect(() => {
+    /* eslint-disable react-hooks/set-state-in-effect -- one-time hydration from a browser-only API (localStorage), not available during SSR */
+    const storedWidth = Number(localStorage.getItem(STORAGE_KEY));
+    if (storedWidth >= MIN_WIDTH && storedWidth <= MAX_WIDTH) setChatWidth(storedWidth);
+    setCollapsed(localStorage.getItem(COLLAPSED_KEY) === "1");
+    setHydrated(true);
+    /* eslint-enable react-hooks/set-state-in-effect */
+  }, []);
+
+  useEffect(() => {
+    if (!hydrated) return;
+    localStorage.setItem(STORAGE_KEY, String(chatWidth));
+  }, [chatWidth, hydrated]);
+
+  useEffect(() => {
+    if (!hydrated) return;
+    localStorage.setItem(COLLAPSED_KEY, collapsed ? "1" : "0");
+  }, [collapsed, hydrated]);
+
+  const onDragStart = useCallback(
+    (e: React.MouseEvent) => {
+      e.preventDefault();
+      if (collapsed) return;
+      dragging.current = true;
+      document.body.style.cursor = "col-resize";
+      document.body.style.userSelect = "none";
+
+      const onMove = (ev: MouseEvent) => {
+        if (!dragging.current) return;
+        const next = Math.min(MAX_WIDTH, Math.max(MIN_WIDTH, ev.clientX));
+        setChatWidth(next);
+      };
+      const onUp = () => {
+        dragging.current = false;
+        document.body.style.cursor = "";
+        document.body.style.userSelect = "";
+        window.removeEventListener("mousemove", onMove);
+        window.removeEventListener("mouseup", onUp);
+      };
+      window.addEventListener("mousemove", onMove);
+      window.addEventListener("mouseup", onUp);
+    },
+    [collapsed]
+  );
 
   const navLink = (href: string, label: string) => (
     <Link
@@ -24,10 +79,10 @@ function Shell({ children }: { children: React.ReactNode }) {
   );
 
   return (
-    <div className="flex h-screen flex-col">
-      <header className="flex items-center justify-between border-b border-border px-6 py-3">
+    <div className="flex h-screen flex-col bg-background">
+      <header className="flex flex-shrink-0 items-center justify-between border-b border-border bg-header px-6 py-3">
         <div className="flex items-center gap-8">
-          <Link href="/" className="font-serif text-xl tracking-tight">
+          <Link href="/" className="font-serif text-xl tracking-tight text-foreground">
             ALTOSSA
           </Link>
           <nav className="hidden items-center gap-6 sm:flex">
@@ -35,31 +90,60 @@ function Shell({ children }: { children: React.ReactNode }) {
             {navLink("/brands", "Brands")}
           </nav>
         </div>
-        <div className="flex gap-2 sm:hidden">
+        <div className="flex items-center gap-2">
           <button
-            onClick={() => setMobileView("catalogue")}
-            className={`rounded-full px-3 py-1 text-xs ${mobileView === "catalogue" ? "bg-foreground text-background" : "text-muted"}`}
+            onClick={() => setCollapsed((c) => !c)}
+            className="hidden items-center gap-1.5 rounded-full border border-border px-3 py-1.5 text-xs text-muted transition-colors hover:border-accent/50 hover:text-foreground sm:flex"
+            title={collapsed ? "Show chat" : "Hide chat"}
           >
-            Catalogue
+            {collapsed ? "Show chat ›" : "‹ Hide chat"}
           </button>
-          <button
-            onClick={() => setMobileView("chat")}
-            className={`rounded-full px-3 py-1 text-xs ${mobileView === "chat" ? "bg-foreground text-background" : "text-muted"}`}
-          >
-            Chat
-          </button>
+          <div className="flex gap-2 sm:hidden">
+            <button
+              onClick={() => setMobileView("catalogue")}
+              className={`rounded-full px-3 py-1 text-xs transition-colors ${
+                mobileView === "catalogue" ? "bg-accent text-accent-foreground" : "text-muted"
+              }`}
+            >
+              Catalogue
+            </button>
+            <button
+              onClick={() => setMobileView("chat")}
+              className={`rounded-full px-3 py-1 text-xs transition-colors ${
+                mobileView === "chat" ? "bg-accent text-accent-foreground" : "text-muted"
+              }`}
+            >
+              Chat
+            </button>
+          </div>
         </div>
       </header>
 
       <div className="flex min-h-0 flex-1">
         <aside
-          className={`w-full border-r border-border sm:w-[380px] sm:flex-shrink-0 ${
-            mobileView === "chat" ? "flex" : "hidden sm:flex"
+          style={{ width: collapsed ? 0 : chatWidth }}
+          className={`min-w-0 flex-shrink-0 overflow-hidden border-r border-border bg-chat-panel transition-[width] duration-200 ease-out ${
+            mobileView === "chat" ? "!w-full flex" : "hidden sm:flex"
           }`}
         >
-          <ChatPanel />
+          <div style={{ width: collapsed ? chatWidth : "100%" }} className="h-full min-w-0 flex-shrink-0 sm:h-full">
+            <ChatPanel />
+          </div>
         </aside>
-        <main className={`min-h-0 flex-1 overflow-y-auto ${mobileView === "catalogue" ? "block" : "hidden sm:block"}`}>
+
+        {!collapsed && (
+          <div
+            onMouseDown={onDragStart}
+            className="hidden w-1.5 flex-shrink-0 cursor-col-resize bg-transparent transition-colors hover:bg-accent/30 sm:block"
+            title="Drag to resize"
+          />
+        )}
+
+        <main
+          className={`min-h-0 min-w-0 flex-1 overflow-y-auto bg-background ${
+            mobileView === "catalogue" ? "block" : "hidden sm:block"
+          }`}
+        >
           {children}
         </main>
       </div>
