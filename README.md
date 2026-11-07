@@ -8,7 +8,7 @@ catalogue automatically — images included.
 ## Stack
 
 - **Frontend/Backend**: Next.js 16 (App Router) + TypeScript + Tailwind CSS v4
-- **LLM**: GroqCloud (`llama-3.3-70b-versatile` for chat/extraction, `meta-llama/llama-4-scout-17b-16e-instruct` for vision), via the Vercel AI SDK, with a custom 12-key rotation/fallback manager
+- **LLM**: GroqCloud (`openai/gpt-oss-120b` for chat/extraction, `qwen/qwen3.8-27b` for vision), via the Vercel AI SDK, with a custom 12-key rotation/fallback manager. Model IDs are env-configurable (`GROQ_TEXT_MODEL`/`GROQ_VISION_MODEL`) — verify against `GET https://api.groq.com/openai/v1/models` with your key if Groq's catalogue changes, since available models can differ by account.
 - **Web research/extraction**: Tavily (search + extract) with direct HTML/JSON-LD parsing as the first pass
 - **Database**: Supabase Postgres
 - **Storage**: Supabase Storage (persisted product images, not hotlinks)
@@ -59,8 +59,8 @@ Copy `.env.example` to `.env.local` and fill in real values. **Never commit
 | `NEXT_PUBLIC_SUPABASE_URL` | Supabase project URL |
 | `SUPABASE_SERVICE_ROLE_KEY` | Supabase service role key (server-only, full access) |
 | `NEXT_PUBLIC_SUPABASE_ANON_KEY` | Present for completeness; not currently used client-side |
-| `GROQ_TEXT_MODEL` | Defaults to `llama-3.3-70b-versatile` |
-| `GROQ_VISION_MODEL` | Defaults to `meta-llama/llama-4-scout-17b-16e-instruct` |
+| `GROQ_TEXT_MODEL` | Defaults to `openai/gpt-oss-120b` |
+| `GROQ_VISION_MODEL` | Defaults to `qwen/qwen3.8-27b` |
 
 ## Supabase setup
 
