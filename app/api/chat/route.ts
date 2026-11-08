@@ -19,7 +19,7 @@ import { getSupabaseAdmin } from "@/lib/supabase/server";
 import { missingProjectIdResponse } from "@/lib/http";
 import { extractAllUrls } from "@/lib/bulk/urlExtract";
 import { processBulkUrls, type BulkUrlResult } from "@/lib/bulk/pipeline";
-import { describeResult, summarizeBulk } from "@/lib/bulk/report";
+import { describeResult, getFailedUrls, summarizeBulk, uiStatus } from "@/lib/bulk/report";
 import type { Inspiration, Product } from "@/lib/types";
 
 const SYSTEM_PROMPT = `You are ALTOSSA, a luxury interior-design research assistant with direct access to a product catalogue and an Inspiration library.
@@ -195,9 +195,7 @@ async function handleBulkUrls({
         controller.enqueue(encoder.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`));
       };
       send("meta", { conversationId: conversation?.id });
-
-      let fullText = `Processing ${bulkUrls.length} links…\n\n`;
-      send("delta", { text: fullText });
+      send("bulk_start", { total: bulkUrls.length });
 
       const shownProducts: Product[] = [];
       const shownInspirations: Inspiration[] = [];
@@ -209,23 +207,28 @@ async function handleBulkUrls({
         }
       };
 
-      const bulkSummary = await processBulkUrls(projectId, bulkUrls, (r) => {
-        pushResult(r);
-        const lines = [describeResult(r)];
-        for (const d of r.discovered ?? []) lines.push(describeResult(d, "  ↳ "));
-        const text = lines.join("\n") + "\n";
-        fullText += text;
-        send("delta", { text });
-      });
+      const bulkSummary = await processBulkUrls(
+        projectId,
+        bulkUrls,
+        (r) => {
+          pushResult(r);
+          send("bulk_progress", { text: describeResult(r), status: uiStatus(r.status) });
+          for (const d of r.discovered ?? []) {
+            send("bulk_progress", { text: describeResult(d, "  ↳ "), status: uiStatus(d.status) });
+          }
+        },
+        (_url, text) => {
+          send("bulk_progress", { text, status: "pending" });
+        }
+      );
 
       const summaryText = summarizeBulk(bulkSummary);
-      fullText += `\n${summaryText}`;
-      send("delta", { text: `\n${summaryText}` });
-      fullText = fullText.trim();
+      const failedUrls = getFailedUrls(bulkSummary);
+      send("delta", { text: summaryText });
 
       const productIds = shownProducts.map((p) => p.id);
       const inspirationIds = shownInspirations.map((i) => i.id);
-      await saveMessage(conversation.id as string, "assistant", fullText, productIds, inspirationIds);
+      await saveMessage(conversation.id as string, "assistant", summaryText, productIds, inspirationIds);
       if (productIds.length > 0) {
         await updateLastShownProducts(conversation.id as string, productIds);
       }
@@ -233,9 +236,10 @@ async function handleBulkUrls({
 
       send("done", {
         conversationId: conversation?.id,
-        reply: fullText,
+        reply: summaryText,
         products: shownProducts.slice(0, 8),
         inspirations: shownInspirations.slice(0, 8),
+        failedUrls,
       });
       controller.close();
     },

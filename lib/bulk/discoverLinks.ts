@@ -9,11 +9,6 @@ const NON_PRODUCT_SLUG_WORDS = [
   "swatch", "swatches", "shipping", "delivery", "returns", "warranty",
 ];
 
-function looksLikeSpecificSlug(segment: string | undefined): boolean {
-  if (!segment) return false;
-  return segment.split("-").filter(Boolean).length >= 2 || segment.length > 15;
-}
-
 function sameHost(a: string, b: string): boolean {
   try {
     return new URL(a).hostname === new URL(b).hostname;
@@ -46,8 +41,12 @@ export function discoverProductLinks(signals: PageSignals, limit = 8): string[] 
     }
     const productIdx = segs.findIndex((s) => PRODUCT_PATH_WORDS.includes(s));
     if (productIdx === -1) continue;
+    // Require a segment after the marker word — that's what distinguishes
+    // an item page ("/products/terra-chair") from the listing root itself
+    // ("/products"). No word-count heuristic: a short real slug is still a
+    // real product.
+    if (productIdx >= segs.length - 1) continue;
     const last = segs[segs.length - 1];
-    if (!looksLikeSpecificSlug(last) || last === segs[productIdx]) continue;
     if (NON_PRODUCT_SLUG_WORDS.some((w) => last.includes(w))) continue;
 
     seen.add(href);

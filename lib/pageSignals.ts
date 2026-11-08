@@ -1,4 +1,6 @@
 import * as cheerio from "cheerio";
+import type { Cheerio, CheerioAPI } from "cheerio";
+import type { AnyNode } from "domhandler";
 
 export const BROWSER_HEADERS = {
   "User-Agent":
@@ -14,6 +16,15 @@ export function absolutize(url: string, base: string): string | null {
   }
 }
 
+export interface ImageCandidate {
+  url: string;
+  alt: string | null;
+  /** Inside a container whose id/class/itemtype names it as product imagery (strong positive signal). */
+  inProductContainer: boolean;
+  /** Inside a container identifiable as a popup/newsletter/cookie-banner/ad/nav chrome (hard exclusion). */
+  inExcludedContainer: boolean;
+}
+
 export interface PageSignals {
   html: string;
   finalUrl: string;
@@ -21,11 +32,54 @@ export interface PageSignals {
   metaDescription: string | null;
   canonicalUrl: string | null;
   ogImages: string[];
-  galleryImages: string[];
+  galleryImages: ImageCandidate[];
   jsonLd: unknown[];
   jsonLdTypes: string[];
   links: { href: string; text: string }[];
   textSnippet: string;
+}
+
+// Containers that are never the product itself — promotional/consent/site-chrome
+// overlays. Matched against the combined id+class of an image and every
+// ancestor, so a delayed newsletter popup that's already in the DOM (just
+// hidden until a JS timer reveals it) is excluded the same as a visible one.
+const EXCLUDED_CONTAINER_KEYWORDS = [
+  "newsletter", "popup", "pop-up", "modal", "subscribe", "sign-up", "signup",
+  "cookie", "consent", "gdpr", "overlay", "lightbox", "dialog",
+  "promo", "promotion", "advert", "advertisement", "banner", "announcement-bar", "sticky-bar",
+  "header", "footer", "klaviyo", "mailchimp", "privy", "sumo", "optin",
+  "social-share", "cart-drawer", "mini-cart", "chat-widget",
+];
+
+// Containers that explicitly identify themselves as holding the product's
+// own imagery — a strong positive signal regardless of filename.
+const PRODUCT_CONTAINER_KEYWORDS = [
+  "product-image", "product-images", "product-gallery", "product-photo",
+  "product-photos", "product-media", "pdp-image", "gallery", "main-image",
+  "hero-image", "item-image", "product-detail", "product-slider", "product-carousel",
+];
+
+function containerFlags($: CheerioAPI, el: Cheerio<AnyNode>): {
+  inProductContainer: boolean;
+  inExcludedContainer: boolean;
+} {
+  const chain = [el, ...el.parents().toArray().map((p) => $(p))];
+  let inProductContainer = false;
+  let inExcludedContainer = false;
+  for (const node of chain) {
+    const idClass = `${node.attr("id") ?? ""} ${node.attr("class") ?? ""}`.toLowerCase();
+    const itemtype = (node.attr("itemtype") ?? "").toLowerCase();
+    if (!inExcludedContainer && EXCLUDED_CONTAINER_KEYWORDS.some((k) => idClass.includes(k))) {
+      inExcludedContainer = true;
+    }
+    if (!inProductContainer && (PRODUCT_CONTAINER_KEYWORDS.some((k) => idClass.includes(k)) || itemtype.includes("product"))) {
+      inProductContainer = true;
+    }
+  }
+  // An exclusion always wins — a "gallery" inside a "newsletter-popup" is
+  // still part of the popup.
+  if (inExcludedContainer) inProductContainer = false;
+  return { inProductContainer, inExcludedContainer };
 }
 
 /**
@@ -80,17 +134,23 @@ export async function fetchPageSignals(url: string): Promise<PageSignals> {
   };
   jsonLd.forEach(collectTypes);
 
-  const galleryImages: string[] = [];
+  const galleryImages: ImageCandidate[] = [];
   $("img").each((_, el) => {
+    const node = $(el);
     const raw =
-      $(el).attr("src") ||
-      $(el).attr("data-src") ||
-      $(el).attr("data-lazy-src") ||
-      $(el).attr("data-original") ||
-      ($(el).attr("srcset") || "").split(",")[0]?.trim().split(" ")[0];
+      node.attr("src") ||
+      node.attr("data-src") ||
+      node.attr("data-lazy-src") ||
+      node.attr("data-original") ||
+      (node.attr("srcset") || "").split(",")[0]?.trim().split(" ")[0];
     if (!raw || raw.startsWith("data:")) return;
     const abs = absolutize(raw, finalUrl);
-    if (abs) galleryImages.push(abs);
+    if (!abs) return;
+    const { inProductContainer, inExcludedContainer } = containerFlags($, node);
+    // Hard-drop anything sitting inside a known popup/consent/chrome
+    // container — never even a candidate, regardless of filename.
+    if (inExcludedContainer) return;
+    galleryImages.push({ url: abs, alt: node.attr("alt")?.trim() || null, inProductContainer, inExcludedContainer });
   });
 
   const links: { href: string; text: string }[] = [];

@@ -1,4 +1,4 @@
-import type { BulkIngestSummary, BulkUrlResult } from "@/lib/bulk/pipeline";
+import type { BulkIngestSummary, BulkStatus, BulkUrlResult } from "@/lib/bulk/pipeline";
 
 function hostOf(url: string): string {
   try {
@@ -6,6 +6,13 @@ function hostOf(url: string): string {
   } catch {
     return url;
   }
+}
+
+/** Coarse category for UI styling (faded/neutral/red) of a progress line. */
+export function uiStatus(status: BulkStatus): "success" | "duplicate" | "failed" {
+  if (status === "failed") return "failed";
+  if (status === "product_duplicate" || status === "inspiration_duplicate") return "duplicate";
+  return "success";
 }
 
 /** One human-readable progress line per processed URL, streamed as it completes. */
@@ -41,6 +48,10 @@ function pluralize(n: number, word: string): string {
   return `${n} ${word}${n === 1 ? "" : "s"}`;
 }
 
+export function getFailedUrls(summary: BulkIngestSummary): string[] {
+  return summary.results.filter((r) => r.status === "failed").map((r) => r.url);
+}
+
 /** Deterministic completion summary — no LLM call, exact counts every time. */
 export function summarizeBulk(summary: BulkIngestSummary): string {
   const c = summary.counts;
@@ -56,9 +67,6 @@ export function summarizeBulk(summary: BulkIngestSummary): string {
       ? ` (plus ${pluralize(c.discoveredProductsAdded, "additional product")} discovered on collection/brand pages)`
       : "";
 
-  const failedUrls = summary.results.filter((r) => r.status === "failed").map((r) => r.url);
-  const retryLine = failedUrls.length > 0 ? `\n\nFailed — paste these again to retry:\n${failedUrls.join("\n")}` : "";
-
   const body = parts.length > 0 ? parts.join(", ") : "nothing usable found";
-  return `${pluralize(summary.total, "link")} processed: ${body}.${extra}${retryLine}`;
+  return `${pluralize(summary.total, "link")} processed: ${body}.${extra}`;
 }

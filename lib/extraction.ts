@@ -35,11 +35,18 @@ const extractionSchema = z.object({
   priceText: z.string().nullable().describe("Price as displayed, with currency, or null"),
 });
 
-// Filenames/paths containing these tokens are almost never the product photo itself.
-const IMAGE_BLACKLIST = [
+// Filenames/paths containing these tokens are almost never the product photo
+// itself — covers newsletter/promo popups, cookie banners, ads, and site
+// chrome that can end up in an image's URL even when fetchPageSignals'
+// DOM-container exclusion (popup/modal containers) didn't catch it, e.g. a
+// promo image sitting directly in the page body outside any named wrapper.
+export const IMAGE_BLACKLIST = [
   "logo", "icon", "favicon", "sprite", "banner", "badge", "placeholder",
   "avatar", "social-share", "social_share", "og-image", "og_image",
   "default-image", "default_image", "wordmark", "brandmark",
+  "newsletter", "popup", "pop-up", "modal", "subscribe", "sign-up", "signup",
+  "cookie", "consent", "gdpr", "promo", "promotion", "advert", "advertisement",
+  "klaviyo", "mailchimp", "privy", "sumo", "optin", "opt-in",
 ];
 
 const STRUCTURAL_PATH_WORDS = new Set([
@@ -72,11 +79,23 @@ interface ScoredImage {
   score: number;
 }
 
-function scoreImage(url: string, tier: number, hints: string[], brandTokens: string[]): number {
+function scoreImage(
+  url: string,
+  tier: number,
+  hints: string[],
+  brandTokens: string[],
+  inProductContainer: boolean
+): number {
   const lower = url.toLowerCase();
   if (IMAGE_BLACKLIST.some((k) => lower.includes(k))) return -100;
 
   let score = -tier * 3; // lower tier (more authoritative source) scores higher
+  // A page telling us directly "this is the product gallery" outweighs
+  // filename guessing — this is what keeps a newsletter-popup image (which
+  // might otherwise coincidentally match a brand/name token) from ever
+  // outscoring the real product photo.
+  if (inProductContainer) score += 15;
+
   const matchedHint = hints.some((h) => lower.includes(h));
   if (matchedHint) score += 10;
 
@@ -88,20 +107,29 @@ function scoreImage(url: string, tier: number, hints: string[], brandTokens: str
 }
 
 function rankImageCandidates(
-  tiers: { urls: string[]; tier: number }[],
+  tiers: { urls: string[]; tier: number; productContainerUrls?: Set<string> }[],
   hints: string[],
   brandTokens: string[]
 ): ScoredImage[] {
   const seen = new Map<string, ScoredImage>();
-  for (const { urls, tier } of tiers) {
+  for (const { urls, tier, productContainerUrls } of tiers) {
     for (const url of urls) {
       if (seen.has(url)) continue;
-      seen.set(url, { url, score: scoreImage(url, tier, hints, brandTokens) });
+      const inProductContainer = productContainerUrls?.has(url) ?? false;
+      seen.set(url, { url, score: scoreImage(url, tier, hints, brandTokens, inProductContainer) });
     }
   }
   return [...seen.values()]
     .filter((c) => c.score > -100)
     .sort((a, b) => b.score - a.score);
+}
+
+function galleryUrls(signals: PageSignals | null): string[] {
+  return signals?.galleryImages.map((c) => c.url) ?? [];
+}
+
+function galleryProductContainerUrls(signals: PageSignals | null): Set<string> {
+  return new Set((signals?.galleryImages ?? []).filter((c) => c.inProductContainer).map((c) => c.url));
 }
 
 function imagesFromJsonLd(jsonLd: unknown[], baseUrl: string): string[] {
@@ -290,7 +318,7 @@ export async function extractProductFromUrl(
       const ranked = rankImageCandidates(
         [
           { urls: fromJsonLd.images, tier: 0 },
-          { urls: signals.galleryImages, tier: 1 },
+          { urls: galleryUrls(signals), tier: 1, productContainerUrls: galleryProductContainerUrls(signals) },
           { urls: signals.ogImages, tier: 2 },
         ],
         hints,
@@ -307,7 +335,7 @@ export async function extractProductFromUrl(
         dimensions: null,
         priceText: fromJsonLd.priceText,
         imageUrls,
-        imagesLowConfidence: ranked.length === 0 || ranked[0].score < 5,
+        imagesLowConfidence: ranked.length === 0 || ranked[0].score < 12,
         canonicalUrl: signals.canonicalUrl ?? finalUrl,
         sourceDomain: host,
       };
@@ -350,7 +378,7 @@ export async function extractProductFromUrl(
   const ranked = rankImageCandidates(
     [
       { urls: jsonLdImages, tier: 0 },
-      { urls: signals?.galleryImages ?? [], tier: 1 },
+      { urls: galleryUrls(signals), tier: 1, productContainerUrls: galleryProductContainerUrls(signals) },
       { urls: [...(signals?.ogImages ?? []), ...fallbackImages], tier: 2 },
     ],
     hints,
@@ -361,7 +389,7 @@ export async function extractProductFromUrl(
   // No candidate matched the product's own name/category at all — the only
   // images we have are generic (brand banner, lifestyle shot, etc.), so
   // whatever we pick should get a vision sanity-check before being saved.
-  const imagesLowConfidence = ranked.length === 0 || ranked[0].score < 5;
+  const imagesLowConfidence = ranked.length === 0 || ranked[0].score < 12;
 
   return {
     name: object.name,

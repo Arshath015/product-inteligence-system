@@ -60,6 +60,14 @@ async function runPool<T, R>(items: T[], limit: number, worker: (item: T) => Pro
   return results;
 }
 
+function hostOf(url: string): string {
+  try {
+    return new URL(url).hostname.replace(/^www\./, "");
+  } catch {
+    return url;
+  }
+}
+
 async function fetchSignalsWithTimeout(url: string): Promise<PageSignals | null> {
   return Promise.race([
     fetchPageSignals(url).catch(() => null),
@@ -97,10 +105,29 @@ async function processDiscovered(projectId: string, urls: string[]): Promise<Bul
   });
 }
 
-async function processOneUrl(projectId: string, url: string): Promise<BulkUrlResult> {
+const KIND_LABEL: Record<ContentKind, string> = {
+  pinterest: "Pinterest link",
+  instagram: "Instagram link",
+  product: "individual product page",
+  collection: "collection/category page",
+  brand: "brand website",
+  gallery: "design gallery",
+  artisan_profile: "artisan profile",
+  artisan_directory: "artisan directory",
+  general: "general page",
+};
+
+async function processOneUrl(
+  projectId: string,
+  url: string,
+  onPhase?: (text: string) => void
+): Promise<BulkUrlResult> {
+  const host = hostOf(url);
+  onPhase?.(`Detecting and classifying ${host}…`);
   const pathKind = classifyFromPath(url);
 
   if (pathKind === "pinterest" || pathKind === "instagram") {
+    onPhase?.(`${KIND_LABEL[pathKind]} — saving to Inspiration…`);
     const result = await saveInspirationUrl(projectId, url, pathKind).catch((err) => ({
       status: "failed" as const,
       inspiration: null,
@@ -117,9 +144,11 @@ async function processOneUrl(projectId: string, url: string): Promise<BulkUrlRes
 
   const signals = await fetchSignalsWithTimeout(url);
   const kind = pathKind ?? classifyFromSignals(url, signals);
+  onPhase?.(`Classified as ${KIND_LABEL[kind]} (${host}) — checking catalogue for duplicates…`);
 
   switch (kind) {
     case "product": {
+      onPhase?.(`Extracting product details and retrieving image for ${host}…`);
       const result = await ingestProductUrl(projectId, url, signals).catch((err) => ({
         status: "failed" as const,
         product: null,
@@ -257,10 +286,11 @@ async function processOneUrl(projectId: string, url: string): Promise<BulkUrlRes
 export async function processBulkUrls(
   projectId: string,
   urls: string[],
-  onResult?: (result: BulkUrlResult) => void
+  onResult?: (result: BulkUrlResult) => void,
+  onPhase?: (url: string, text: string) => void
 ): Promise<BulkIngestSummary> {
   const results = await runPool(urls, CONCURRENCY, async (url) => {
-    const result = await processOneUrl(projectId, url).catch(
+    const result = await processOneUrl(projectId, url, (text) => onPhase?.(url, text)).catch(
       (err): BulkUrlResult => ({ url, kind: "general", status: "failed", message: (err as Error).message }),
     );
     onResult?.(result);

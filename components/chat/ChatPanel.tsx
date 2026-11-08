@@ -6,6 +6,9 @@ import { MessageBubble } from "@/components/chat/MessageBubble";
 import { ConversationList } from "@/components/chat/ConversationList";
 import { analyzeImage } from "@/lib/client/api";
 
+const MIN_TEXTAREA_HEIGHT = 36;
+const MAX_TEXTAREA_HEIGHT = 200;
+
 export function ChatPanel() {
   const { messages, sending, sendMessage, openProduct, newChat } = useChat();
   const [input, setInput] = useState("");
@@ -13,10 +16,23 @@ export function ChatPanel() {
   const [showHistory, setShowHistory] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
   }, [messages]);
+
+  // Grows the composer to fit pasted/typed content (e.g. a block of URLs) up
+  // to a cap, then switches to internal scrolling — the surrounding layout
+  // and bottom-docked composer position never move.
+  useEffect(() => {
+    const el = textareaRef.current;
+    if (!el) return;
+    el.style.height = "auto";
+    const next = Math.min(Math.max(el.scrollHeight, MIN_TEXTAREA_HEIGHT), MAX_TEXTAREA_HEIGHT);
+    el.style.height = `${next}px`;
+    el.style.overflowY = el.scrollHeight > MAX_TEXTAREA_HEIGHT ? "auto" : "hidden";
+  }, [input]);
 
   const submit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -105,6 +121,7 @@ export function ChatPanel() {
             {analyzing ? "…" : "📷"}
           </button>
           <textarea
+            ref={textareaRef}
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={(e) => {
@@ -116,6 +133,7 @@ export function ChatPanel() {
             rows={1}
             placeholder="Message ALTOSSA…"
             className="min-w-0 flex-1 resize-none bg-transparent px-1 py-1 text-sm outline-none placeholder:text-muted"
+            style={{ maxHeight: MAX_TEXTAREA_HEIGHT }}
           />
           <button
             type="submit"

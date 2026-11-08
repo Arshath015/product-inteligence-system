@@ -149,6 +149,12 @@ export interface ChatStreamDone {
   reply: string;
   products: Product[];
   inspirations: Inspiration[];
+  failedUrls?: string[];
+}
+
+export interface BulkProgressLine {
+  text: string;
+  status: "pending" | "success" | "duplicate" | "failed";
 }
 
 /**
@@ -164,6 +170,8 @@ export async function streamChatMessage(
     onMeta?: (conversationId: string) => void;
     onDelta?: (text: string) => void;
     onDone?: (data: ChatStreamDone) => void;
+    onBulkStart?: (total: number) => void;
+    onBulkProgress?: (line: BulkProgressLine) => void;
   }
 ) {
   const res = await fetch("/api/chat", {
@@ -197,6 +205,8 @@ export async function streamChatMessage(
       if (event === "meta") handlers.onMeta?.(data.conversationId);
       else if (event === "delta") handlers.onDelta?.(data.text);
       else if (event === "done") handlers.onDone?.(data as ChatStreamDone);
+      else if (event === "bulk_start") handlers.onBulkStart?.(data.total);
+      else if (event === "bulk_progress") handlers.onBulkProgress?.(data as BulkProgressLine);
     }
   }
 }

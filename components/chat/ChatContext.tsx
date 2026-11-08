@@ -13,6 +13,11 @@ import {
 } from "@/lib/client/api";
 import type { Conversation, Inspiration, Product } from "@/lib/types";
 
+export interface BulkProgressLineVM {
+  text: string;
+  status: "pending" | "success" | "duplicate" | "failed";
+}
+
 export interface ChatMessageVM {
   id: string;
   role: "user" | "assistant";
@@ -20,6 +25,12 @@ export interface ChatMessageVM {
   products?: Product[];
   inspirations?: Inspiration[];
   pending?: boolean;
+  bulk?: {
+    total: number;
+    lines: BulkProgressLineVM[];
+    inProgress: boolean;
+    failedUrls: string[];
+  };
 }
 
 interface ChatContextValue {
@@ -159,10 +170,33 @@ export function ChatProvider({ projectId, children }: { projectId: string; child
               setActiveConversationId(conversationId);
             }
           },
+          onBulkStart: (total) => {
+            setMessages((prev) =>
+              prev.map((m) =>
+                m.id === pendingId
+                  ? { ...m, pending: false, bulk: { total, lines: [], inProgress: true, failedUrls: [] } }
+                  : m
+              )
+            );
+          },
+          onBulkProgress: (line) => {
+            setMessages((prev) =>
+              prev.map((m) => (m.id === pendingId && m.bulk ? { ...m, bulk: { ...m.bulk, lines: [...m.bulk.lines, line] } } : m))
+            );
+          },
           onDelta: (delta) => {
             streamedText += delta;
             setMessages((prev) =>
-              prev.map((m) => (m.id === pendingId ? { ...m, content: streamedText, pending: false } : m))
+              prev.map((m) =>
+                m.id === pendingId
+                  ? {
+                      ...m,
+                      content: streamedText,
+                      pending: false,
+                      bulk: m.bulk ? { ...m.bulk, inProgress: false } : undefined,
+                    }
+                  : m
+              )
             );
           },
           onDone: (data) => {
@@ -177,6 +211,7 @@ export function ChatProvider({ projectId, children }: { projectId: string; child
                       content: data.reply,
                       products: data.products,
                       inspirations: data.inspirations,
+                      bulk: m.bulk ? { ...m.bulk, inProgress: false, failedUrls: data.failedUrls ?? [] } : undefined,
                     }
                   : m
               )

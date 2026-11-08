@@ -44,8 +44,12 @@ export function classifyFromPath(url: string): ContentKind | null {
 
   const artisanIdx = segs.findIndex((s) => ARTISAN_PATH_WORDS.includes(s));
   if (artisanIdx !== -1) {
-    const last = segs[segs.length - 1];
-    return looksLikeSpecificSlug(last) ? "artisan_profile" : "artisan_directory";
+    // A segment after the marker word (e.g. "/artisan/jane-doe/") is a
+    // specific profile regardless of how many words the slug has — word
+    // count was a weak proxy and wrongly flagged short real names/slugs as
+    // a directory. A bare "/artisans/" with nothing after it is the listing.
+    const hasSlugAfter = artisanIdx < segs.length - 1;
+    return hasSlugAfter ? "artisan_profile" : "artisan_directory";
   }
   if (segs.some((s) => DIRECTORY_PATH_WORDS.some((w) => s.includes(w))) || (hasQuery && segs.length <= 2)) {
     return "artisan_directory";
@@ -55,8 +59,11 @@ export function classifyFromPath(url: string): ContentKind | null {
   }
   const productIdx = segs.findIndex((s) => PRODUCT_PATH_WORDS.includes(s));
   if (productIdx !== -1) {
-    const last = segs[segs.length - 1];
-    return looksLikeSpecificSlug(last) ? "product" : "collection";
+    // Same reasoning: "/product/poodle-armchair/" is an item page no matter
+    // how short the slug is. A bare "/products/" with nothing after it is
+    // the listing root.
+    const hasSlugAfter = productIdx < segs.length - 1;
+    return hasSlugAfter ? "product" : "collection";
   }
   if (segs.length === 0) return null; // homepage — ambiguous, needs page signals
   // A single long hyphenated slug directly off root reads as a product detail page.

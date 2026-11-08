@@ -1,6 +1,7 @@
 "use client";
 
 import type { ChatMessageVM } from "@/components/chat/ChatContext";
+import { BulkProgressCard } from "@/components/chat/BulkProgressCard";
 import { ChatProductCard } from "@/components/chat/ChatProductCard";
 import { InspirationChatCard } from "@/components/chat/InspirationChatCard";
 import { LinkifiedText } from "@/components/chat/LinkifiedText";
@@ -30,13 +31,23 @@ export function MessageBubble({
   return (
     <div className={`flex w-full min-w-0 ${isUser ? "justify-end" : "justify-start"}`}>
       <div className={`min-w-0 max-w-[88%] space-y-2 ${isUser ? "items-end" : "items-start"}`}>
-        <div
-          className={`min-w-0 overflow-hidden whitespace-pre-wrap break-words rounded-2xl px-4 py-2.5 text-sm leading-relaxed [overflow-wrap:anywhere] ${
-            isUser ? "bg-accent text-accent-foreground" : "bg-surface text-foreground"
-          }`}
-        >
-          <LinkifiedText text={message.content} isUser={isUser} />
-        </div>
+        {message.bulk && (
+          <BulkProgressCard
+            total={message.bulk.total}
+            lines={message.bulk.lines}
+            inProgress={message.bulk.inProgress}
+            failedUrls={message.bulk.failedUrls}
+          />
+        )}
+        {Boolean(message.content) && (
+          <div
+            className={`min-w-0 overflow-hidden whitespace-pre-wrap break-words rounded-2xl px-4 py-2.5 text-sm leading-relaxed [overflow-wrap:anywhere] ${
+              isUser ? "bg-accent text-accent-foreground" : "bg-surface text-foreground"
+            }`}
+          >
+            <LinkifiedText text={message.content} isUser={isUser} />
+          </div>
+        )}
         {Boolean(message.products?.length || message.inspirations?.length) && (
           <div className="flex min-w-0 flex-col gap-2">
             {message.products?.map((p) => (

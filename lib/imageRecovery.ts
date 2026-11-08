@@ -1,9 +1,10 @@
 import { getSupabaseAdmin } from "@/lib/supabase/server";
-import { extractProductFromUrl } from "@/lib/extraction";
+import { extractProductFromUrl, IMAGE_BLACKLIST } from "@/lib/extraction";
 import { findAndUploadImage } from "@/lib/images";
 import { tavilySearch } from "@/lib/tavily";
 import { logActivity } from "@/lib/products";
 import { tokensFrom } from "@/lib/textTokens";
+import { config } from "@/lib/config";
 
 export interface RecoveryResult {
   productId: string;
@@ -35,7 +36,7 @@ function namesLikelyMatch(a: string, b: string): boolean {
  *    page and only accept an image from a result whose extracted name
  *    clearly matches this product — never substitutes an unrelated photo.
  */
-export async function recoverProductImage(productId: string): Promise<RecoveryResult> {
+export async function recoverProductImage(productId: string, force = false): Promise<RecoveryResult> {
   const supabase = getSupabaseAdmin();
 
   const { data: product } = await supabase
@@ -47,12 +48,12 @@ export async function recoverProductImage(productId: string): Promise<RecoveryRe
 
   const { data: imageRow } = await supabase
     .from("product_images")
-    .select("id, status")
+    .select("id, status, storage_path")
     .eq("product_id", productId)
     .eq("is_primary", true)
     .maybeSingle();
 
-  if (imageRow?.status === "stored") {
+  if (imageRow?.status === "stored" && !force) {
     return { productId, status: "already_stored", message: "Image already stored." };
   }
   if (!product.source_url) {
@@ -68,6 +69,7 @@ export async function recoverProductImage(productId: string): Promise<RecoveryRe
 
   const applyUpload = async (uploaded: NonNullable<Awaited<ReturnType<typeof tryUpload>>>) => {
     if (imageRow) {
+      const previousPath = imageRow.storage_path as string | null;
       await supabase
         .from("product_images")
         .update({
@@ -79,6 +81,11 @@ export async function recoverProductImage(productId: string): Promise<RecoveryRe
           status: "stored",
         })
         .eq("id", imageRow.id);
+      // Only cleaned up once the new image is confirmed stored above —
+      // never delete the old blob before the replacement is safely in place.
+      if (previousPath && previousPath !== uploaded.storagePath) {
+        await supabase.storage.from(config.storage.bucket).remove([previousPath]).catch(() => {});
+      }
     } else {
       await supabase.from("product_images").insert({
         product_id: productId,
@@ -168,6 +175,68 @@ export async function recoverAllMissingImages(projectId?: string): Promise<Recov
   const results: RecoveryResult[] = [];
   for (const id of ids) {
     results.push(await recoverProductImage(id));
+  }
+  return results;
+}
+
+export interface SuspectImage {
+  productId: string;
+  name: string;
+  originalUrl: string;
+  reason: string;
+}
+
+/**
+ * Read-only scan of already-"stored" primary images for ones that were
+ * almost certainly mis-selected under the old (pre-DOM-context) extraction
+ * logic — their original_url contains a newsletter/popup/cookie/promo/ad
+ * keyword. Flags only; never modifies anything. A flagged product is a
+ * candidate for recoverSuspectImages, not an automatic rewrite.
+ */
+export async function auditProductImages(projectId?: string): Promise<SuspectImage[]> {
+  const supabase = getSupabaseAdmin();
+  const { data: rows } = await supabase
+    .from("product_images")
+    .select("product_id, original_url, product:products(id, name, project_id)")
+    .eq("is_primary", true)
+    .eq("status", "stored")
+    .not("original_url", "is", null);
+
+  const suspects: SuspectImage[] = [];
+  for (const row of rows ?? []) {
+    const originalUrl = row.original_url as string | null;
+    if (!originalUrl) continue;
+    const product = Array.isArray(row.product) ? row.product[0] : row.product;
+    if (!product) continue;
+    if (projectId && product.project_id !== projectId) continue;
+
+    const lower = originalUrl.toLowerCase();
+    const matched = IMAGE_BLACKLIST.find((k) => lower.includes(k));
+    if (matched) {
+      suspects.push({
+        productId: product.id as string,
+        name: product.name as string,
+        originalUrl,
+        reason: `original_url matches excluded pattern "${matched}"`,
+      });
+    }
+  }
+  return suspects;
+}
+
+/**
+ * Re-runs recovery (forced, bypassing the "already stored" guard) for every
+ * product flagged by auditProductImages — the only path that overwrites a
+ * "stored" image, and only for images that matched an exclusion pattern.
+ * Still never creates a second product_images row or a duplicate product;
+ * if the improved pipeline can't find a better candidate than before, the
+ * existing row is left as-is rather than replaced with something worse.
+ */
+export async function recoverSuspectImages(projectId?: string): Promise<RecoveryResult[]> {
+  const suspects = await auditProductImages(projectId);
+  const results: RecoveryResult[] = [];
+  for (const s of suspects) {
+    results.push(await recoverProductImage(s.productId, true));
   }
   return results;
 }
