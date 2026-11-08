@@ -50,6 +50,17 @@ export async function ingestProductUrl(url: string): Promise<IngestResult> {
     };
   }
 
+  // Redundant with the checks inside extractProductFromUrl, but cheap
+  // insurance against ever writing a nameless "UNKNOWN BRAND" record —
+  // essential product identification failing must never look like success.
+  if (!extracted.name.trim()) {
+    return {
+      status: "failed",
+      product: null,
+      message: "Couldn't identify a specific product from that page.",
+    };
+  }
+
   if (GENERIC_NAMES.has(extracted.name.trim().toLowerCase()) && extracted.imageUrls.length === 0) {
     return {
       status: "failed",

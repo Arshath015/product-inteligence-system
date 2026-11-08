@@ -18,10 +18,16 @@ catalogue automatically — images included.
 - `lib/groq/` — key rotation manager (`keyManager.ts`) and a `withGroqRetry`
   wrapper (`client.ts`) that rotates to another key on rate-limit/quota/auth
   failures and retries, up to 4 keys per call.
-- `lib/extraction.ts` — pulls OG tags / JSON-LD / page text from a URL
-  (falling back to Tavily's extract API if the site blocks direct fetches),
+- `lib/extraction.ts` — pulls OG tags / JSON-LD / page text from a URL,
   then asks the Groq text model to normalize it into a structured product
-  record.
+  record. Escalates to Tavily's extraction service (which does its own JS
+  rendering) whenever a direct fetch fails outright *or* succeeds but
+  yields no real content — a bot-detection page or an unhydrated SPA shell
+  can both return HTTP 200 with nothing useful in it. If neither method
+  turns up anything substantial, or the model can't identify an actual
+  product name from what was found, extraction throws rather than
+  returning placeholder/empty fields — `lib/ingest.ts` treats that as a
+  failed import and never writes a nameless/brandless catalogue record.
 - `lib/images.ts` — downloads candidate image URLs server-side and persists
   the first one that succeeds to Supabase Storage. Never substitutes an
   unrelated image; records a "missing" status if every candidate fails.

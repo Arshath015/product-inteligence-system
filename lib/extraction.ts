@@ -237,9 +237,37 @@ function imagesFromJsonLd(jsonLd: unknown[], baseUrl: string): string[] {
 }
 
 /**
- * Pulls product signals from a URL, falling back to Tavily's extraction
- * service when the site blocks direct fetches, then asks the Groq text
- * model to normalize everything into a structured record.
+ * A direct fetch can return 200 with an HTML shell that has no real
+ * content — a JS-rendered SPA page before hydration, or a bot-detection
+ * page that doesn't bother 403ing. Either way there's nothing here worth
+ * sending to the model, so this is treated the same as a failed fetch and
+ * escalates to the next extraction method.
+ */
+function hasUsableSignal(
+  signals: PageSignals | null,
+  fallbackText: string | null,
+  fallbackImages: string[]
+): boolean {
+  if (signals) {
+    const substantialText = signals.textSnippet.length > 150;
+    const hasMeta = Boolean(signals.title || signals.metaDescription);
+    const hasStructuredData = signals.jsonLd.length > 0;
+    const hasImages = signals.ogImages.length > 0 || signals.galleryImages.length > 0;
+    return substantialText || hasMeta || hasStructuredData || hasImages;
+  }
+  return Boolean((fallbackText && fallbackText.length > 150) || fallbackImages.length > 0);
+}
+
+/**
+ * Pulls product signals from a URL. Tries a direct fetch first; if that
+ * fails outright (network/DNS/HTTP error) or succeeds but yields no real
+ * content (JS-only page, bot wall), escalates to Tavily's extraction
+ * service — this is also ALTOSSA's answer to "JavaScript-rendered pages":
+ * rather than embedding a headless browser in the app, Tavily's crawler
+ * (which does render JS) is the fallback layer for pages a plain fetch
+ * can't read. If neither method produces anything usable, this throws
+ * instead of asking the model to invent a product from nothing — callers
+ * (lib/ingest.ts) must not create a catalogue record in that case.
  */
 export async function extractProductFromUrl(url: string): Promise<ExtractedProductData> {
   let signals: PageSignals | null = null;
@@ -248,14 +276,27 @@ export async function extractProductFromUrl(url: string): Promise<ExtractedProdu
   let finalUrl = url;
 
   try {
-    signals = await fetchPageSignals(url);
-    finalUrl = signals.finalUrl;
+    const fetched = await fetchPageSignals(url);
+    finalUrl = fetched.finalUrl;
+    if (hasUsableSignal(fetched, null, [])) {
+      signals = fetched;
+    }
   } catch {
+    // network/DNS/HTTP failure — fall through to the Tavily escalation below
+  }
+
+  if (!signals) {
     const [extracted] = await tavilyExtract([url]).catch(() => []);
     if (extracted) {
       fallbackText = extracted.raw_content?.slice(0, 6000) ?? null;
       fallbackImages = extracted.images ?? [];
     }
+  }
+
+  if (!hasUsableSignal(signals, fallbackText, fallbackImages)) {
+    throw new Error(
+      "Couldn't retrieve any readable content from that page — it may be unreachable, blocked, or require JavaScript rendering that isn't supported."
+    );
   }
 
   const jsonLdImages = signals ? imagesFromJsonLd(signals.jsonLd, finalUrl) : [];
@@ -276,9 +317,13 @@ export async function extractProductFromUrl(url: string): Promise<ExtractedProdu
     generateObject({
       model,
       schema: extractionSchema,
-      prompt: `Extract structured product information for a luxury furniture/interior-design catalogue from the following webpage content. The source URL is ${url}. If a value is not clearly present, use null (or "other" for categoryHint).\n\n${context}`,
+      prompt: `Extract structured product information for a luxury furniture/interior-design catalogue from the following webpage content. The source URL is ${url}. If a value is not clearly present, use null (or "other" for categoryHint). If the content doesn't actually describe a specific product at all, return an empty string for name — do not invent one.\n\n${context}`,
     })
   );
+
+  if (!object.name.trim()) {
+    throw new Error("Couldn't identify a specific product from that page's content.");
+  }
 
   const host = (() => {
     try {
