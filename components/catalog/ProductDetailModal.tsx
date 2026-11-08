@@ -1,10 +1,14 @@
 "use client";
 
-import Image from "next/image";
 import { useState } from "react";
 import type { Product } from "@/lib/types";
 import { deleteProduct, updateProduct } from "@/lib/client/api";
 import { useChat } from "@/components/chat/ChatContext";
+import { SmartImage } from "@/components/common/SmartImage";
+
+const missingFallback = (
+  <div className="flex h-full items-center justify-center text-muted">Image unavailable</div>
+);
 
 function primaryImage(p: Product) {
   const img = p.images?.find((i) => i.is_primary) ?? p.images?.[0];
@@ -69,11 +73,7 @@ export function ProductDetailModal({ product, onClose }: { product: Product; onC
         onClick={(e) => e.stopPropagation()}
       >
         <div className="relative h-80 w-full bg-background sm:h-96">
-          {img ? (
-            <Image src={img} alt={product.name} fill unoptimized className="object-contain p-4" />
-          ) : (
-            <div className="flex h-full items-center justify-center text-muted">Image unavailable</div>
-          )}
+          <SmartImage src={img} alt={product.name} className="object-contain p-4" fallback={missingFallback} />
           <button
             onClick={onClose}
             className="absolute right-3 top-3 flex h-8 w-8 items-center justify-center rounded-full border border-border bg-surface/90 text-sm text-foreground transition-colors hover:border-accent/50"

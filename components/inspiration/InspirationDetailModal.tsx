@@ -1,9 +1,13 @@
 "use client";
 
-import Image from "next/image";
 import { useState } from "react";
 import type { Inspiration } from "@/lib/types";
 import { deleteInspiration, updateInspiration } from "@/lib/client/api";
+import { SmartImage } from "@/components/common/SmartImage";
+
+const missingFallback = (
+  <div className="flex h-full items-center justify-center text-muted">No preview available</div>
+);
 
 export function InspirationDetailModal({
   item,
@@ -60,11 +64,12 @@ export function InspirationDetailModal({
         onClick={(e) => e.stopPropagation()}
       >
         <div className="relative h-80 w-full bg-background sm:h-96">
-          {img ? (
-            <Image src={img} alt={item.title ?? "Inspiration"} fill unoptimized className="object-contain p-4" />
-          ) : (
-            <div className="flex h-full items-center justify-center text-muted">No preview available</div>
-          )}
+          <SmartImage
+            src={img}
+            alt={item.title ?? "Inspiration"}
+            className="object-contain p-4"
+            fallback={missingFallback}
+          />
           <button
             onClick={onClose}
             className="absolute right-3 top-3 flex h-8 w-8 items-center justify-center rounded-full border border-border bg-surface/90 text-sm text-foreground transition-colors hover:border-accent/50"

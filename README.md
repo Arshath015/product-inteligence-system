@@ -25,6 +25,21 @@ catalogue automatically — images included.
 - `lib/images.ts` — downloads candidate image URLs server-side and persists
   the first one that succeeds to Supabase Storage. Never substitutes an
   unrelated image; records a "missing" status if every candidate fails.
+  Validates every download by actually decoding it with `sharp` (catches
+  HTML error/bot-challenge pages mislabeled as images, truncated files),
+  rejects anything under 200px on either edge (lazy-load placeholder
+  thumbnails pass a naive content-type check but aren't usable photos), and
+  recompresses oversized originals (manufacturer photography is sometimes
+  6000px+/20MB+) down to a reasonable size — same photo, smaller file.
+- `lib/imageRecovery.ts` — re-attempts a missing product image: first
+  retries the product's own source page with the current pipeline, then
+  (only if that's blocked, e.g. by bot detection) searches for the same
+  product on another page and verifies the extracted name actually matches
+  before accepting an image from it. Always updates the existing
+  `product_images` row in place, never inserts a duplicate. Exposed via
+  `POST /api/products/[id]/recover-image` (one product) and
+  `POST /api/products/recover-images` (sweeps everything currently
+  missing/failed).
 - `lib/catalog.ts` — brand/designer/category resolution and duplicate
   detection (canonical URL first, then `pg_trgm` fuzzy name matching scoped
   to the same brand).

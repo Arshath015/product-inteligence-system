@@ -1,7 +1,11 @@
 "use client";
 
-import Image from "next/image";
 import type { Inspiration } from "@/lib/types";
+import { SmartImage } from "@/components/common/SmartImage";
+
+const missingFallback = (
+  <div className="flex h-full w-full items-center justify-center text-[10px] text-muted">No image</div>
+);
 
 export function InspirationChatCard({ item }: { item: Inspiration }) {
   const img = item.image_status === "stored" ? item.image_public_url : null;
@@ -13,11 +17,12 @@ export function InspirationChatCard({ item }: { item: Inspiration }) {
       className="flex w-full min-w-0 max-w-full items-center gap-3 rounded-xl border border-border bg-surface p-2.5 text-left transition-colors hover:border-accent/40"
     >
       <div className="relative h-14 w-14 flex-shrink-0 overflow-hidden rounded-lg bg-background">
-        {img ? (
-          <Image src={img} alt={item.title ?? "Inspiration"} fill className="object-contain p-1" unoptimized />
-        ) : (
-          <div className="flex h-full w-full items-center justify-center text-[10px] text-muted">No image</div>
-        )}
+        <SmartImage
+          src={img}
+          alt={item.title ?? "Inspiration"}
+          className="object-contain p-1"
+          fallback={missingFallback}
+        />
       </div>
       <div className="min-w-0 flex-1 overflow-hidden">
         <p className="truncate text-sm font-medium text-foreground">{item.title ?? "Saved inspiration"}</p>

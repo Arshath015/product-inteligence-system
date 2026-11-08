@@ -3,6 +3,7 @@ import { generateObject } from "ai";
 import { z } from "zod";
 import { withGroqRetry } from "@/lib/groq/client";
 import { tavilyExtract } from "@/lib/tavily";
+import { tokensFrom } from "@/lib/textTokens";
 import type { ExtractedProductData } from "@/lib/types";
 
 const CATEGORY_SLUGS = [
@@ -71,13 +72,6 @@ const STRUCTURAL_PATH_WORDS = new Set([
   "category", "categories", "collection", "collections", "shop", "store",
   "catalogue", "catalog", "page", "pages", "detail", "details", "index",
 ]);
-
-function tokensFrom(text: string): string[] {
-  return text
-    .toLowerCase()
-    .split(/[^a-z0-9]+/)
-    .filter((t) => t.length > 2 && !/^\d+$/.test(t));
-}
 
 /** Tokens likely to identify THIS product: from the page title and URL path segments. */
 function buildNameHints(title: string | null, url: string): string[] {
