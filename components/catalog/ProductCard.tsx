@@ -30,6 +30,11 @@ export function ProductCard({ product, onOpen }: { product: Product; onOpen: (p:
           className="object-contain p-3 transition-transform duration-300 group-hover:scale-[1.04]"
           fallback={missingFallback}
         />
+        {product.is_owner === false && (
+          <span className="absolute left-2 top-2 rounded-full border border-border bg-surface/90 px-2 py-0.5 text-[10px] text-muted">
+            Shared
+          </span>
+        )}
       </div>
       <div className="flex flex-1 flex-col gap-1 border-t border-border p-3.5">
         <p className="truncate text-[11px] uppercase tracking-wide text-muted">

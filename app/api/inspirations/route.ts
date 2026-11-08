@@ -1,16 +1,23 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getSupabaseAdmin } from "@/lib/supabase/server";
 import { saveInspirationUrl } from "@/lib/inspiration";
+import { missingProjectIdResponse } from "@/lib/http";
 
 export async function GET(req: NextRequest) {
   const sp = req.nextUrl.searchParams;
+  const projectId = sp.get("projectId");
+  if (!projectId) return missingProjectIdResponse();
   const q = sp.get("q")?.trim();
   const platform = sp.get("platform")?.trim();
   const tag = sp.get("tag")?.trim();
   const limit = Math.min(Number(sp.get("limit") ?? 60), 120);
 
   const supabase = getSupabaseAdmin();
-  let query = supabase.from("inspirations").select("*", { count: "exact" }).eq("status", "active");
+  let query = supabase
+    .from("inspirations")
+    .select("*", { count: "exact" })
+    .eq("project_id", projectId)
+    .eq("status", "active");
 
   if (platform) query = query.eq("platform", platform);
   if (tag) query = query.contains("tags", [tag]);
@@ -25,6 +32,7 @@ export async function GET(req: NextRequest) {
 
 export async function POST(req: NextRequest) {
   const body = await req.json().catch(() => null);
+  if (!body?.projectId) return missingProjectIdResponse();
   const url = body?.url;
   if (!url || typeof url !== "string") {
     return NextResponse.json({ error: "Missing url" }, { status: 400 });
@@ -35,6 +43,6 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Invalid url" }, { status: 400 });
   }
 
-  const result = await saveInspirationUrl(url);
+  const result = await saveInspirationUrl(body.projectId, url);
   return NextResponse.json(result);
 }

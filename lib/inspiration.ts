@@ -31,7 +31,11 @@ function toInspirationPlatform(linkType: LinkType): Inspiration["platform"] {
  * platform blocks extraction, saves the bare URL with whatever metadata
  * (if any) was available instead of failing outright.
  */
-export async function saveInspirationUrl(url: string, platformHint?: LinkType): Promise<SaveInspirationResult> {
+export async function saveInspirationUrl(
+  projectId: string,
+  url: string,
+  platformHint?: LinkType
+): Promise<SaveInspirationResult> {
   const supabase = getSupabaseAdmin();
   const platform = toInspirationPlatform(platformHint ?? classifyUrl(url));
 
@@ -40,6 +44,7 @@ export async function saveInspirationUrl(url: string, platformHint?: LinkType): 
   const { data: existing } = await supabase
     .from("inspirations")
     .select("*")
+    .eq("project_id", projectId)
     .eq("canonical_url", meta.canonicalUrl)
     .maybeSingle();
 
@@ -54,6 +59,7 @@ export async function saveInspirationUrl(url: string, platformHint?: LinkType): 
   const { data: created, error } = await supabase
     .from("inspirations")
     .insert({
+      project_id: projectId,
       platform,
       source_url: url,
       canonical_url: meta.canonicalUrl,
@@ -88,7 +94,7 @@ export async function saveInspirationUrl(url: string, platformHint?: LinkType): 
     await supabase.from("inspirations").update({ image_status: "missing" }).eq("id", created.id);
   }
 
-  await logActivity("inspiration_saved", "inspiration", created.id, { platform, source_url: url });
+  await logActivity("inspiration_saved", "inspiration", created.id, { project_id: projectId, platform, source_url: url });
 
   const { data: final } = await supabase.from("inspirations").select("*").eq("id", created.id).single();
 

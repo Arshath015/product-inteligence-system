@@ -151,15 +151,20 @@ export async function recoverProductImage(productId: string): Promise<RecoveryRe
   };
 }
 
-export async function recoverAllMissingImages(): Promise<RecoveryResult[]> {
+export async function recoverAllMissingImages(projectId?: string): Promise<RecoveryResult[]> {
   const supabase = getSupabaseAdmin();
   const { data: rows } = await supabase
     .from("product_images")
     .select("product_id")
     .in("status", ["missing", "failed"])
     .eq("is_primary", true);
+  let ids = Array.from(new Set((rows ?? []).map((r) => r.product_id as string)));
 
-  const ids = Array.from(new Set((rows ?? []).map((r) => r.product_id as string)));
+  if (projectId && ids.length > 0) {
+    const { data: owned } = await supabase.from("products").select("id").eq("project_id", projectId).in("id", ids);
+    const ownedIds = new Set((owned ?? []).map((p) => p.id as string));
+    ids = ids.filter((id) => ownedIds.has(id));
+  }
   const results: RecoveryResult[] = [];
   for (const id of ids) {
     results.push(await recoverProductImage(id));

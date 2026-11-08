@@ -7,6 +7,7 @@ import { InspirationCard } from "@/components/inspiration/InspirationCard";
 import { InspirationDetailModal } from "@/components/inspiration/InspirationDetailModal";
 import { AddInspirationDialog } from "@/components/inspiration/AddInspirationDialog";
 import { useChat } from "@/components/chat/ChatContext";
+import { useProject } from "@/components/project/ProjectContext";
 
 const PLATFORMS = [
   { slug: "", label: "All" },
@@ -18,6 +19,7 @@ const PLATFORMS = [
 ];
 
 export function InspirationLibrary() {
+  const { projectId } = useProject();
   const { catalogVersion } = useChat();
   const [items, setItems] = useState<Inspiration[]>([]);
   const [q, setQ] = useState("");
@@ -33,12 +35,12 @@ export function InspirationLibrary() {
     // eslint-disable-next-line react-hooks/set-state-in-effect -- debounced fetch-on-change needs a loading flag
     setLoading(true);
     const handle = setTimeout(() => {
-      fetchInspirations({ q: q || undefined, platform: platform || undefined })
+      fetchInspirations(projectId, { q: q || undefined, platform: platform || undefined })
         .then((r) => setItems(r.inspirations))
         .finally(() => setLoading(false));
     }, 250);
     return () => clearTimeout(handle);
-  }, [q, platform, version, catalogVersion]);
+  }, [projectId, q, platform, version, catalogVersion]);
 
   return (
     <div className="flex min-h-full flex-col">
@@ -115,7 +117,7 @@ export function InspirationLibrary() {
           onClose={() => setSelected(null)}
           onChanged={() => {
             refresh();
-            fetchInspirations({ q: q || undefined, platform: platform || undefined }).then((r) => {
+            fetchInspirations(projectId, { q: q || undefined, platform: platform || undefined }).then((r) => {
               const updated = r.inspirations.find((i) => i.id === selected.id);
               if (updated) setSelected(updated);
             });

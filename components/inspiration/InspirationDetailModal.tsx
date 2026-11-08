@@ -3,6 +3,7 @@
 import { useState } from "react";
 import type { Inspiration } from "@/lib/types";
 import { deleteInspiration, updateInspiration } from "@/lib/client/api";
+import { useProject } from "@/components/project/ProjectContext";
 import { SmartImage } from "@/components/common/SmartImage";
 
 const missingFallback = (
@@ -18,6 +19,7 @@ export function InspirationDetailModal({
   onClose: () => void;
   onChanged: () => void;
 }) {
+  const { projectId } = useProject();
   const [busy, setBusy] = useState(false);
   const [tagInput, setTagInput] = useState("");
   const img = item.image_status === "stored" ? item.image_public_url : null;
@@ -27,7 +29,7 @@ export function InspirationDetailModal({
     if (!tag || item.tags.includes(tag)) return;
     setBusy(true);
     try {
-      await updateInspiration(item.id, { tags: [...item.tags, tag] });
+      await updateInspiration(projectId, item.id, { tags: [...item.tags, tag] });
       setTagInput("");
       onChanged();
     } finally {
@@ -38,7 +40,7 @@ export function InspirationDetailModal({
   const removeTag = async (tag: string) => {
     setBusy(true);
     try {
-      await updateInspiration(item.id, { tags: item.tags.filter((t) => t !== tag) });
+      await updateInspiration(projectId, item.id, { tags: item.tags.filter((t) => t !== tag) });
       onChanged();
     } finally {
       setBusy(false);
@@ -49,7 +51,7 @@ export function InspirationDetailModal({
     if (!confirm("Delete this inspiration? This can't be undone.")) return;
     setBusy(true);
     try {
-      await deleteInspiration(item.id);
+      await deleteInspiration(projectId, item.id);
       onChanged();
       onClose();
     } finally {

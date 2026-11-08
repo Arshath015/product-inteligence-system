@@ -16,6 +16,7 @@ import {
   updateLastShownProducts,
 } from "@/lib/chat/memory";
 import { getSupabaseAdmin } from "@/lib/supabase/server";
+import { missingProjectIdResponse } from "@/lib/http";
 
 const SYSTEM_PROMPT = `You are ALTOSSA, a luxury interior-design research assistant with direct access to a product catalogue and an Inspiration library.
 
@@ -37,8 +38,12 @@ export async function POST(req: NextRequest) {
   if (!message || typeof message !== "string") {
     return new Response(JSON.stringify({ error: "message is required" }), { status: 400 });
   }
+  const projectId = body?.projectId;
+  if (!projectId || typeof projectId !== "string") {
+    return missingProjectIdResponse();
+  }
 
-  const conversation = await getOrCreateConversation(body?.conversationId);
+  const conversation = await getOrCreateConversation(projectId, body?.conversationId);
   if (!conversation) {
     return new Response(JSON.stringify({ error: "Could not open conversation" }), { status: 500 });
   }
@@ -46,8 +51,8 @@ export async function POST(req: NextRequest) {
   const [recent, summary, prefs, memoryItems, lastShownIds] = await Promise.all([
     getRecentMessages(conversation.id as string),
     getSummary(conversation.id as string),
-    getPreferences(),
-    getRecentMemoryItems(),
+    getPreferences(projectId),
+    getRecentMemoryItems(projectId),
     getLastShownProductIds(conversation.id as string),
   ]);
 
@@ -91,7 +96,12 @@ export async function POST(req: NextRequest) {
 
   await saveMessage(conversation.id as string, "user", message);
 
-  const ctx: ToolCtx = { shownProducts: [], shownInspirations: [], conversationId: conversation.id as string };
+  const ctx: ToolCtx = {
+    projectId,
+    shownProducts: [],
+    shownInspirations: [],
+    conversationId: conversation.id as string,
+  };
   const encoder = new TextEncoder();
 
   const stream = new ReadableStream({
@@ -126,7 +136,7 @@ export async function POST(req: NextRequest) {
       if (productIds.length > 0) {
         await updateLastShownProducts(conversation.id as string, productIds);
       }
-      await maybeSummarizeConversation(conversation.id as string).catch(() => {});
+      await maybeSummarizeConversation(projectId, conversation.id as string).catch(() => {});
 
       send("done", {
         conversationId: conversation.id,

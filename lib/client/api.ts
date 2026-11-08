@@ -1,4 +1,4 @@
-import type { Brand, Category, ChatMessage, Conversation, Inspiration, Product } from "@/lib/types";
+import type { Brand, Category, ChatMessage, Conversation, Inspiration, Product, Project } from "@/lib/types";
 
 async function json<T>(res: Response): Promise<T> {
   if (!res.ok) {
@@ -8,17 +8,87 @@ async function json<T>(res: Response): Promise<T> {
   return res.json();
 }
 
-export function fetchCategories() {
-  return fetch("/api/categories").then((r) => json<{ categories: (Category & { product_count: number })[] }>(r));
+// ---- Projects ----
+
+export function fetchProjects(status?: "active" | "archived") {
+  const qs = status ? `?status=${status}` : "";
+  return fetch(`/api/projects${qs}`).then((r) => json<{ projects: Project[] }>(r));
 }
 
-export function fetchBrands(q?: string) {
-  const qs = q ? `?q=${encodeURIComponent(q)}` : "";
-  return fetch(`/api/brands${qs}`).then((r) => json<{ brands: (Brand & { product_count: number })[] }>(r));
+export function fetchProject(id: string) {
+  return fetch(`/api/projects/${id}`).then((r) => json<{ project: Project }>(r));
 }
 
-export function fetchBrand(id: string) {
-  return fetch(`/api/brands/${id}`).then((r) => json<{ brand: Brand; products: Product[] }>(r));
+export interface ReusePayload {
+  sourceProjectId: string;
+  allProducts?: boolean;
+  allBrands?: boolean;
+  productIds?: string[];
+  brandIds?: string[];
+}
+
+export function createProject(payload: { name: string; clientName?: string; description?: string; reuse?: ReusePayload }) {
+  return fetch("/api/projects", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  }).then((r) => json<{ project: Project }>(r));
+}
+
+export function updateProject(id: string, payload: Record<string, unknown>) {
+  return fetch(`/api/projects/${id}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  }).then((r) => json<{ project: Project }>(r));
+}
+
+export function deleteProject(id: string) {
+  return fetch(`/api/projects/${id}`, { method: "DELETE" }).then((r) => json<{ ok: true }>(r));
+}
+
+export function reuseIntoProject(projectId: string, payload: ReusePayload) {
+  return fetch(`/api/projects/${projectId}/reuse`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  }).then((r) => json<{ ok: true }>(r));
+}
+
+export function removeProjectReference(projectId: string, target: { productId?: string; brandId?: string }) {
+  return fetch(`/api/projects/${projectId}/reuse`, {
+    method: "DELETE",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(target),
+  }).then((r) => json<{ ok: true }>(r));
+}
+
+// ---- Categories / Brands / Products (project-scoped) ----
+
+export function fetchCategories(projectId: string) {
+  return fetch(`/api/categories?projectId=${projectId}`).then((r) =>
+    json<{ categories: (Category & { product_count: number })[] }>(r)
+  );
+}
+
+export function fetchBrands(projectId: string, q?: string) {
+  const params = new URLSearchParams({ projectId });
+  if (q) params.set("q", q);
+  return fetch(`/api/brands?${params.toString()}`).then((r) =>
+    json<{ brands: (Brand & { product_count: number; is_owner: boolean })[] }>(r)
+  );
+}
+
+export function fetchBrand(projectId: string, id: string) {
+  return fetch(`/api/brands/${id}?projectId=${projectId}`).then((r) =>
+    json<{ brand: Brand; products: Product[] }>(r)
+  );
+}
+
+export function deleteBrand(projectId: string, id: string) {
+  return fetch(`/api/brands/${id}?projectId=${projectId}`, { method: "DELETE" }).then((r) =>
+    json<{ ok: true; removedReferenceOnly?: boolean }>(r)
+  );
 }
 
 export interface ProductQuery {
@@ -28,8 +98,8 @@ export interface ProductQuery {
   sort?: "newest" | "name";
 }
 
-export function fetchProducts(query: ProductQuery = {}) {
-  const params = new URLSearchParams();
+export function fetchProducts(projectId: string, query: ProductQuery = {}) {
+  const params = new URLSearchParams({ projectId });
   if (query.q) params.set("q", query.q);
   if (query.category) params.set("category", query.category);
   if (query.brand) params.set("brand", query.brand);
@@ -37,31 +107,33 @@ export function fetchProducts(query: ProductQuery = {}) {
   return fetch(`/api/products?${params.toString()}`).then((r) => json<{ products: Product[]; total: number }>(r));
 }
 
-export function createProduct(payload: Record<string, unknown>) {
+export function createProduct(projectId: string, payload: Record<string, unknown>) {
   return fetch("/api/products", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload),
+    body: JSON.stringify({ ...payload, projectId }),
   }).then((r) => json<{ product: Product }>(r));
 }
 
-export function updateProduct(id: string, payload: Record<string, unknown>) {
+export function updateProduct(projectId: string, id: string, payload: Record<string, unknown>) {
   return fetch(`/api/products/${id}`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload),
+    body: JSON.stringify({ ...payload, projectId }),
   }).then((r) => json<{ product: Product }>(r));
 }
 
-export function deleteProduct(id: string) {
-  return fetch(`/api/products/${id}`, { method: "DELETE" }).then((r) => json<{ ok: true }>(r));
+export function deleteProduct(projectId: string, id: string) {
+  return fetch(`/api/products/${id}?projectId=${projectId}`, { method: "DELETE" }).then((r) =>
+    json<{ ok: true; removedReferenceOnly?: boolean }>(r)
+  );
 }
 
-export function ingestUrl(url: string) {
+export function ingestUrl(projectId: string, url: string) {
   return fetch("/api/ingest", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ url }),
+    body: JSON.stringify({ url, projectId }),
   }).then((r) => json<{ status: string; product: Product | null; message: string }>(r));
 }
 
@@ -78,6 +150,7 @@ export interface ChatStreamDone {
  * blank line; each has an `event:` line and a `data:` line of JSON.
  */
 export async function streamChatMessage(
+  projectId: string,
   message: string,
   conversationId: string | null,
   handlers: {
@@ -89,7 +162,7 @@ export async function streamChatMessage(
   const res = await fetch("/api/chat", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ message, conversationId }),
+    body: JSON.stringify({ message, conversationId, projectId }),
   });
   if (!res.ok || !res.body) {
     const body = await res.json().catch(() => ({}));
@@ -121,14 +194,16 @@ export async function streamChatMessage(
   }
 }
 
-export function fetchProductsByIds(ids: string[]) {
+export function fetchProductsByIds(projectId: string, ids: string[]) {
   if (ids.length === 0) return Promise.resolve({ products: [] as Product[] });
-  return fetch(`/api/products/by-ids?ids=${ids.join(",")}`).then((r) => json<{ products: Product[] }>(r));
+  return fetch(`/api/products/by-ids?projectId=${projectId}&ids=${ids.join(",")}`).then((r) =>
+    json<{ products: Product[] }>(r)
+  );
 }
 
-export function fetchInspirationsByIds(ids: string[]) {
+export function fetchInspirationsByIds(projectId: string, ids: string[]) {
   if (ids.length === 0) return Promise.resolve({ inspirations: [] as Inspiration[] });
-  return fetch(`/api/inspirations/by-ids?ids=${ids.join(",")}`).then((r) =>
+  return fetch(`/api/inspirations/by-ids?projectId=${projectId}&ids=${ids.join(",")}`).then((r) =>
     json<{ inspirations: Inspiration[] }>(r)
   );
 }
@@ -147,8 +222,8 @@ export interface InspirationQuery {
   tag?: string;
 }
 
-export function fetchInspirations(query: InspirationQuery = {}) {
-  const params = new URLSearchParams();
+export function fetchInspirations(projectId: string, query: InspirationQuery = {}) {
+  const params = new URLSearchParams({ projectId });
   if (query.q) params.set("q", query.q);
   if (query.platform) params.set("platform", query.platform);
   if (query.tag) params.set("tag", query.tag);
@@ -157,49 +232,58 @@ export function fetchInspirations(query: InspirationQuery = {}) {
   );
 }
 
-export function saveInspirationLink(url: string) {
+export function saveInspirationLink(projectId: string, url: string) {
   return fetch("/api/inspirations", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ url }),
+    body: JSON.stringify({ url, projectId }),
   }).then((r) => json<{ status: string; inspiration: Inspiration | null; message: string }>(r));
 }
 
-export function updateInspiration(id: string, payload: Record<string, unknown>) {
+export function updateInspiration(projectId: string, id: string, payload: Record<string, unknown>) {
   return fetch(`/api/inspirations/${id}`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload),
+    body: JSON.stringify({ ...payload, projectId }),
   }).then((r) => json<{ inspiration: Inspiration }>(r));
 }
 
-export function deleteInspiration(id: string) {
-  return fetch(`/api/inspirations/${id}`, { method: "DELETE" }).then((r) => json<{ ok: true }>(r));
+export function deleteInspiration(projectId: string, id: string) {
+  return fetch(`/api/inspirations/${id}?projectId=${projectId}`, { method: "DELETE" }).then((r) =>
+    json<{ ok: true }>(r)
+  );
 }
 
-export function fetchConversations(q?: string) {
-  const qs = q ? `?q=${encodeURIComponent(q)}` : "";
-  return fetch(`/api/conversations${qs}`).then((r) => json<{ conversations: Conversation[] }>(r));
+export function fetchConversations(projectId: string, q?: string) {
+  const params = new URLSearchParams({ projectId });
+  if (q) params.set("q", q);
+  return fetch(`/api/conversations?${params.toString()}`).then((r) => json<{ conversations: Conversation[] }>(r));
 }
 
-export function createConversation() {
-  return fetch("/api/conversations", { method: "POST" }).then((r) => json<{ conversation: Conversation }>(r));
+export function createConversation(projectId: string) {
+  return fetch("/api/conversations", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ projectId }),
+  }).then((r) => json<{ conversation: Conversation }>(r));
 }
 
-export function fetchConversation(id: string) {
-  return fetch(`/api/conversations/${id}`).then((r) =>
+export function fetchConversation(projectId: string, id: string) {
+  return fetch(`/api/conversations/${id}?projectId=${projectId}`).then((r) =>
     json<{ conversation: Conversation; messages: ChatMessage[] }>(r)
   );
 }
 
-export function updateConversation(id: string, payload: Record<string, unknown>) {
+export function updateConversation(projectId: string, id: string, payload: Record<string, unknown>) {
   return fetch(`/api/conversations/${id}`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload),
+    body: JSON.stringify({ ...payload, projectId }),
   }).then((r) => json<{ conversation: Conversation }>(r));
 }
 
-export function deleteConversation(id: string) {
-  return fetch(`/api/conversations/${id}`, { method: "DELETE" }).then((r) => json<{ ok: true }>(r));
+export function deleteConversation(projectId: string, id: string) {
+  return fetch(`/api/conversations/${id}?projectId=${projectId}`, { method: "DELETE" }).then((r) =>
+    json<{ ok: true }>(r)
+  );
 }

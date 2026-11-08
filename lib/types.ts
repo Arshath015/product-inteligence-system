@@ -8,6 +8,7 @@ export interface Category {
 
 export interface Brand {
   id: string;
+  project_id: string;
   name: string;
   slug: string;
   website_url: string | null;
@@ -16,6 +17,7 @@ export interface Brand {
   logo_url: string | null;
   status: "active" | "archived";
   created_at: string;
+  is_owner?: boolean;
 }
 
 export interface Designer {
@@ -38,6 +40,7 @@ export interface ProductImage {
 
 export interface Product {
   id: string;
+  project_id: string;
   name: string;
   slug: string;
   brand_id: string | null;
@@ -58,6 +61,7 @@ export interface Product {
   designer?: Designer | null;
   category?: Category | null;
   images?: ProductImage[];
+  is_owner?: boolean;
 }
 
 export interface ExtractedProductData {
@@ -77,6 +81,7 @@ export interface ExtractedProductData {
 
 export interface Inspiration {
   id: string;
+  project_id: string;
   platform: "pinterest" | "instagram" | "manufacturer" | "brand" | "other";
   source_url: string;
   canonical_url: string | null;
@@ -96,6 +101,7 @@ export interface Inspiration {
 
 export interface Conversation {
   id: string;
+  project_id: string;
   title: string | null;
   status: "active" | "archived";
   last_shown_product_ids: string[];
@@ -111,4 +117,23 @@ export interface ChatMessage {
   referenced_product_ids: string[];
   referenced_inspiration_ids: string[];
   created_at: string;
+}
+
+export interface Project {
+  id: string;
+  name: string;
+  client_name: string | null;
+  description: string | null;
+  status: "active" | "archived";
+  created_at: string;
+  updated_at: string;
+  stats?: ProjectStats | null;
+}
+
+export interface ProjectStats {
+  product_count: number;
+  brand_count: number;
+  inspiration_count: number;
+  conversation_count: number;
+  last_activity: string | null;
 }

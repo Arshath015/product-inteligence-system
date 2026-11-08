@@ -42,7 +42,7 @@ interface ChatContextValue {
 
 const ChatContext = createContext<ChatContextValue | null>(null);
 
-export function ChatProvider({ children }: { children: React.ReactNode }) {
+export function ChatProvider({ projectId, children }: { projectId: string; children: React.ReactNode }) {
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
   const [messages, setMessages] = useState<ChatMessageVM[]>([]);
@@ -53,36 +53,41 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
   const hydrated = useRef(false);
 
   const refreshConversations = useCallback(async () => {
-    const { conversations: list } = await fetchConversations();
+    const { conversations: list } = await fetchConversations(projectId);
     setConversations(list);
     return list;
-  }, []);
+  }, [projectId]);
 
-  const loadConversation = useCallback(async (id: string) => {
-    const { messages: history } = await fetchConversation(id);
-    const productIds = Array.from(new Set(history.flatMap((m) => m.referenced_product_ids ?? [])));
-    const inspirationIds = Array.from(new Set(history.flatMap((m) => m.referenced_inspiration_ids ?? [])));
-    const [{ products }, { inspirations }] = await Promise.all([
-      fetchProductsByIds(productIds),
-      fetchInspirationsByIds(inspirationIds),
-    ]);
-    const productById = new Map(products.map((p) => [p.id, p]));
-    const inspirationById = new Map(inspirations.map((i) => [i.id, i]));
+  const loadConversation = useCallback(
+    async (id: string) => {
+      const { messages: history } = await fetchConversation(projectId, id);
+      const productIds = Array.from(new Set(history.flatMap((m) => m.referenced_product_ids ?? [])));
+      const inspirationIds = Array.from(new Set(history.flatMap((m) => m.referenced_inspiration_ids ?? [])));
+      const [{ products }, { inspirations }] = await Promise.all([
+        fetchProductsByIds(projectId, productIds),
+        fetchInspirationsByIds(projectId, inspirationIds),
+      ]);
+      const productById = new Map(products.map((p) => [p.id, p]));
+      const inspirationById = new Map(inspirations.map((i) => [i.id, i]));
 
-    activeId.current = id;
-    setActiveConversationId(id);
-    setMessages(
-      history.map((m) => ({
-        id: m.id,
-        role: m.role as "user" | "assistant",
-        content: m.content,
-        products: (m.referenced_product_ids ?? []).map((pid) => productById.get(pid)).filter(Boolean) as Product[],
-        inspirations: (m.referenced_inspiration_ids ?? [])
-          .map((iid) => inspirationById.get(iid))
-          .filter(Boolean) as Inspiration[],
-      }))
-    );
-  }, []);
+      activeId.current = id;
+      setActiveConversationId(id);
+      setMessages(
+        history.map((m) => ({
+          id: m.id,
+          role: m.role as "user" | "assistant",
+          content: m.content,
+          products: (m.referenced_product_ids ?? [])
+            .map((pid) => productById.get(pid))
+            .filter(Boolean) as Product[],
+          inspirations: (m.referenced_inspiration_ids ?? [])
+            .map((iid) => inspirationById.get(iid))
+            .filter(Boolean) as Inspiration[],
+        }))
+      );
+    },
+    [projectId]
+  );
 
   useEffect(() => {
     if (hydrated.current) return;
@@ -109,28 +114,28 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
 
   const renameConversation = useCallback(
     async (id: string, title: string) => {
-      await updateConversation(id, { title });
+      await updateConversation(projectId, id, { title });
       await refreshConversations();
     },
-    [refreshConversations]
+    [projectId, refreshConversations]
   );
 
   const archiveConversation = useCallback(
     async (id: string) => {
-      await updateConversation(id, { status: "archived" });
+      await updateConversation(projectId, id, { status: "archived" });
       if (activeId.current === id) newChat();
       await refreshConversations();
     },
-    [refreshConversations, newChat]
+    [projectId, refreshConversations, newChat]
   );
 
   const deleteConversation = useCallback(
     async (id: string) => {
-      await apiDeleteConversation(id);
+      await apiDeleteConversation(projectId, id);
       if (activeId.current === id) newChat();
       await refreshConversations();
     },
-    [refreshConversations, newChat]
+    [projectId, refreshConversations, newChat]
   );
 
   const sendMessage = useCallback(
@@ -147,7 +152,7 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
       let streamedText = "";
 
       try {
-        await streamChatMessage(trimmed, activeId.current, {
+        await streamChatMessage(projectId, trimmed, activeId.current, {
           onMeta: (conversationId) => {
             if (!activeId.current) {
               activeId.current = conversationId;
@@ -192,7 +197,7 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
         setSending(false);
       }
     },
-    [refreshConversations]
+    [projectId, refreshConversations]
   );
 
   return (

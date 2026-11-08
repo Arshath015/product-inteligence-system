@@ -10,6 +10,7 @@ import { searchMemory } from "@/lib/chat/memory";
 import type { Inspiration, Product } from "@/lib/types";
 
 export interface ToolCtx {
+  projectId: string;
   shownProducts: Product[];
   shownInspirations: Inspiration[];
   conversationId: string;
@@ -57,7 +58,7 @@ export function buildChatTools(ctx: ToolCtx) {
   return {
     search_catalog: tool({
       description:
-        "Search the existing product catalogue by name, description, category or brand. Always try this before researching the web.",
+        "Search the ACTIVE PROJECT's product catalogue by name, description, category or brand. Always try this before researching the web.",
       inputSchema: z.object({
         query: z.string().describe("Free-text search, e.g. 'Italian lounge chair'"),
         categorySlug: z
@@ -71,6 +72,7 @@ export function buildChatTools(ctx: ToolCtx) {
       }),
       execute: async ({ query, categorySlug, brandSlug, limit }) => {
         const { products, total } = await listProducts({
+          projectId: ctx.projectId,
           q: query,
           categorySlug: categorySlug ?? undefined,
           brandSlug: brandSlug ?? undefined,
@@ -83,13 +85,13 @@ export function buildChatTools(ctx: ToolCtx) {
 
     save_link: tool({
       description:
-        "Handles ANY URL the client pastes — a product page, a Pinterest pin/board, an Instagram post/reel, or a brand site. Automatically detects the link type and routes it correctly: product pages go to the catalogue, Pinterest/Instagram links go to the Inspiration library. Use this for every URL — don't try to guess the platform yourself.",
+        "Handles ANY URL the client pastes — a product page, a Pinterest pin/board, an Instagram post/reel, or a brand site. Automatically detects the link type and routes it correctly: product pages go to the active project's catalogue, Pinterest/Instagram links go to its Inspiration library. Use this for every URL — don't try to guess the platform yourself.",
       inputSchema: z.object({ url: z.string().describe("The URL the client shared") }),
       execute: async ({ url }) => {
         const linkType = classifyUrl(url);
 
         if (linkType === "pinterest" || linkType === "instagram") {
-          const result = await saveInspirationUrl(url, linkType);
+          const result = await saveInspirationUrl(ctx.projectId, url, linkType);
           if (result.inspiration) pushShownInspiration(ctx, [result.inspiration]);
           return {
             linkType,
@@ -99,7 +101,7 @@ export function buildChatTools(ctx: ToolCtx) {
           };
         }
 
-        const result = await ingestProductUrl(url);
+        const result = await ingestProductUrl(ctx.projectId, url);
         if (result.product) pushShown(ctx, [result.product]);
         return {
           linkType: "product",
@@ -112,10 +114,10 @@ export function buildChatTools(ctx: ToolCtx) {
 
     save_inspiration_explicit: tool({
       description:
-        "Save a URL to the Inspiration library specifically (not the product catalogue), even if it's a manufacturer/brand link. Use only when the client explicitly asks to save something as inspiration rather than as a catalogue product.",
+        "Save a URL to the active project's Inspiration library specifically (not the product catalogue), even if it's a manufacturer/brand link. Use only when the client explicitly asks to save something as inspiration rather than as a catalogue product.",
       inputSchema: z.object({ url: z.string() }),
       execute: async ({ url }) => {
-        const result = await saveInspirationUrl(url);
+        const result = await saveInspirationUrl(ctx.projectId, url);
         if (result.inspiration) pushShownInspiration(ctx, [result.inspiration]);
         return {
           status: result.status,
@@ -127,7 +129,7 @@ export function buildChatTools(ctx: ToolCtx) {
 
     web_research: tool({
       description:
-        "Search the public web for brands or products that are not already in the catalogue. Use only when the catalogue search didn't return enough results, or the user asked about a brand/topic directly.",
+        "Search the public web for brands or products that are not already in the active project's catalogue. Use only when the catalogue search didn't return enough results, or the user asked about a brand/topic directly.",
       inputSchema: z.object({
         query: z.string(),
         maxResults: z.number().int().min(1).max(10).default(6),
@@ -145,38 +147,40 @@ export function buildChatTools(ctx: ToolCtx) {
     }),
 
     list_brands: tool({
-      description: "List brands already in the catalogue, with how many products each has.",
+      description: "List brands already in the active project's catalogue, with how many products each has.",
       inputSchema: z.object({ limit: z.number().int().min(1).max(50).default(25) }),
       execute: async ({ limit }) => {
         const supabase = getSupabaseAdmin();
         const { data } = await supabase
-          .from("brands_with_counts")
-          .select("name,slug,product_count")
+          .rpc("brands_with_counts_for_project", { p_project_id: ctx.projectId })
           .order("name", { ascending: true })
           .limit(limit);
-        return { brands: data ?? [] };
+        return { brands: (data ?? []).map((b: { name: string; slug: string; product_count: number }) => b) };
       },
     }),
 
     remember_preference: tool({
       description:
-        "Persist a short fact about the client's taste or preferences (e.g. favorite brands, styles, budget range) so future conversations can use it. Keep keys short and stable, e.g. 'style_preference'.",
+        "Persist a short fact about the client's taste or preferences (e.g. favorite brands, styles, budget range) for this project so future conversations in it can use it. Keep keys short and stable, e.g. 'style_preference'.",
       inputSchema: z.object({ key: z.string(), value: z.string() }),
       execute: async ({ key, value }) => {
         const supabase = getSupabaseAdmin();
         await supabase
           .from("assistant_memory")
-          .upsert({ key, value, updated_at: new Date().toISOString() }, { onConflict: "key" });
+          .upsert(
+            { project_id: ctx.projectId, key, value, updated_at: new Date().toISOString() },
+            { onConflict: "project_id,key" }
+          );
         return { ok: true };
       },
     }),
 
     recall_memory: tool({
       description:
-        "Search earlier conversations and saved long-term facts for something relevant to what the client is asking now — e.g. a brand or preference they mentioned in a previous session. Only use when the current conversation's own context doesn't already answer it.",
+        "Search this project's earlier conversations and saved long-term facts for something relevant to what the client is asking now — e.g. a brand or preference they mentioned in a previous session. Only use when the current conversation's own context doesn't already answer it. Never surfaces another project's data.",
       inputSchema: z.object({ query: z.string() }),
       execute: async ({ query }) => {
-        const result = await searchMemory(query, ctx.conversationId);
+        const result = await searchMemory(ctx.projectId, query, ctx.conversationId);
         return result;
       },
     }),

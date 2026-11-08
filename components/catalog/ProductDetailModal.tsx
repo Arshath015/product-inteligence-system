@@ -4,6 +4,7 @@ import { useState } from "react";
 import type { Product } from "@/lib/types";
 import { deleteProduct, updateProduct } from "@/lib/client/api";
 import { useChat } from "@/components/chat/ChatContext";
+import { useProject } from "@/components/project/ProjectContext";
 import { SmartImage } from "@/components/common/SmartImage";
 
 const missingFallback = (
@@ -19,6 +20,7 @@ const inputClass =
   "w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground outline-none transition-colors focus:border-accent";
 
 export function ProductDetailModal({ product, onClose }: { product: Product; onClose: () => void }) {
+  const { projectId } = useProject();
   const { bumpCatalog } = useChat();
   const [editing, setEditing] = useState(false);
   const [form, setForm] = useState({
@@ -34,7 +36,7 @@ export function ProductDetailModal({ product, onClose }: { product: Product; onC
   const save = async () => {
     setBusy(true);
     try {
-      await updateProduct(product.id, form);
+      await updateProduct(projectId, product.id, form);
       bumpCatalog();
       setEditing(false);
       onClose();
@@ -46,7 +48,7 @@ export function ProductDetailModal({ product, onClose }: { product: Product; onC
   const archive = async () => {
     setBusy(true);
     try {
-      await updateProduct(product.id, { status: "archived" });
+      await updateProduct(projectId, product.id, { status: "archived" });
       bumpCatalog();
       onClose();
     } finally {
@@ -55,10 +57,13 @@ export function ProductDetailModal({ product, onClose }: { product: Product; onC
   };
 
   const remove = async () => {
-    if (!confirm(`Delete "${product.name}"? This can't be undone.`)) return;
+    const confirmMsg = product.is_owner === false
+      ? `Remove "${product.name}" from this project? The original stays in its source project.`
+      : `Delete "${product.name}"? This can't be undone.`;
+    if (!confirm(confirmMsg)) return;
     setBusy(true);
     try {
-      await deleteProduct(product.id);
+      await deleteProduct(projectId, product.id);
       bumpCatalog();
       onClose();
     } finally {
@@ -135,7 +140,14 @@ export function ProductDetailModal({ product, onClose }: { product: Product; onC
           ) : (
             <>
               <div>
-                <p className="text-xs uppercase tracking-wide text-muted">{product.brand?.name ?? "Unknown brand"}</p>
+                <div className="flex items-center justify-between gap-2">
+                  <p className="text-xs uppercase tracking-wide text-muted">{product.brand?.name ?? "Unknown brand"}</p>
+                  {product.is_owner === false && (
+                    <span className="rounded-full border border-border px-2 py-0.5 text-[10px] text-muted">
+                      Referenced from another project
+                    </span>
+                  )}
+                </div>
                 <h2 className="font-serif text-2xl text-foreground">{product.name}</h2>
                 {product.designer?.name && <p className="text-sm text-muted">Designed by {product.designer.name}</p>}
               </div>
@@ -183,25 +195,29 @@ export function ProductDetailModal({ product, onClose }: { product: Product; onC
               )}
 
               <div className="flex gap-2 pt-2">
-                <button
-                  onClick={() => setEditing(true)}
-                  className="rounded-full border border-border px-4 py-1.5 text-xs text-muted hover:border-accent/50 hover:text-foreground"
-                >
-                  Edit
-                </button>
-                <button
-                  onClick={archive}
-                  disabled={busy}
-                  className="rounded-full border border-border px-4 py-1.5 text-xs text-muted hover:border-accent/50 hover:text-foreground"
-                >
-                  Archive
-                </button>
+                {product.is_owner !== false && (
+                  <>
+                    <button
+                      onClick={() => setEditing(true)}
+                      className="rounded-full border border-border px-4 py-1.5 text-xs text-muted hover:border-accent/50 hover:text-foreground"
+                    >
+                      Edit
+                    </button>
+                    <button
+                      onClick={archive}
+                      disabled={busy}
+                      className="rounded-full border border-border px-4 py-1.5 text-xs text-muted hover:border-accent/50 hover:text-foreground"
+                    >
+                      Archive
+                    </button>
+                  </>
+                )}
                 <button
                   onClick={remove}
                   disabled={busy}
                   className="rounded-full border border-danger/40 px-4 py-1.5 text-xs text-danger hover:bg-danger/10"
                 >
-                  Delete
+                  {product.is_owner === false ? "Remove" : "Delete"}
                 </button>
               </div>
             </>

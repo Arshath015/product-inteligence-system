@@ -2,8 +2,10 @@
 
 import { useState } from "react";
 import { saveInspirationLink } from "@/lib/client/api";
+import { useProject } from "@/components/project/ProjectContext";
 
 export function AddInspirationDialog({ onClose, onSaved }: { onClose: () => void; onSaved: () => void }) {
+  const { projectId } = useProject();
   const [url, setUrl] = useState("");
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState<string | null>(null);
@@ -13,7 +15,7 @@ export function AddInspirationDialog({ onClose, onSaved }: { onClose: () => void
     setBusy(true);
     setStatus(null);
     try {
-      const res = await saveInspirationLink(url.trim());
+      const res = await saveInspirationLink(projectId, url.trim());
       setStatus(res.message);
       onSaved();
     } catch (err) {

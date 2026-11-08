@@ -3,8 +3,10 @@
 import { useState } from "react";
 import { createProduct, ingestUrl } from "@/lib/client/api";
 import { useChat } from "@/components/chat/ChatContext";
+import { useProject } from "@/components/project/ProjectContext";
 
 export function AddProductDialog({ onClose }: { onClose: () => void }) {
+  const { projectId } = useProject();
   const { bumpCatalog } = useChat();
   const [mode, setMode] = useState<"url" | "manual">("url");
   const [url, setUrl] = useState("");
@@ -17,7 +19,7 @@ export function AddProductDialog({ onClose }: { onClose: () => void }) {
     setBusy(true);
     setStatus(null);
     try {
-      const res = await ingestUrl(url.trim());
+      const res = await ingestUrl(projectId, url.trim());
       setStatus(res.message);
       bumpCatalog();
     } catch (err) {
@@ -32,7 +34,7 @@ export function AddProductDialog({ onClose }: { onClose: () => void }) {
     setBusy(true);
     setStatus(null);
     try {
-      await createProduct(form);
+      await createProduct(projectId, form);
       bumpCatalog();
       onClose();
     } catch (err) {

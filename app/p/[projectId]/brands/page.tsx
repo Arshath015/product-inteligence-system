@@ -1,5 +1,5 @@
 import { BrandDirectory } from "@/components/catalog/BrandDirectory";
 
-export default function BrandsPage() {
+export default function ProjectBrandsPage() {
   return <BrandDirectory />;
 }

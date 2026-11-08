@@ -1,5 +1,5 @@
-import { CatalogueView } from "@/components/catalog/CatalogueView";
+import { ProjectSelectionScreen } from "@/components/project/ProjectSelectionScreen";
 
 export default function Home() {
-  return <CatalogueView />;
+  return <ProjectSelectionScreen />;
 }

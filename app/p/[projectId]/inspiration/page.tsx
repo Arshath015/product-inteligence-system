@@ -1,5 +1,5 @@
 import { InspirationLibrary } from "@/components/inspiration/InspirationLibrary";
 
-export default function InspirationPage() {
+export default function ProjectInspirationPage() {
   return <InspirationLibrary />;
 }

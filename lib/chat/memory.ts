@@ -7,21 +7,40 @@ import type { ChatMessage } from "@/lib/types";
 const RAW_HISTORY_LIMIT = 10;
 const SUMMARIZE_AFTER_MESSAGES = 24;
 
-export async function getOrCreateConversation(conversationId?: string | null) {
+/**
+ * Returns the conversation for this project — creating a new one if no id
+ * was given, or if the given id doesn't belong to this project (this is
+ * the isolation boundary: a conversationId leaking from another project
+ * can never be resumed here, it just silently starts a fresh one).
+ */
+export async function getOrCreateConversation(projectId: string, conversationId?: string | null) {
   const supabase = getSupabaseAdmin();
 
   if (conversationId) {
-    const { data } = await supabase.from("conversations").select("*").eq("id", conversationId).maybeSingle();
+    const { data } = await supabase
+      .from("conversations")
+      .select("*")
+      .eq("id", conversationId)
+      .eq("project_id", projectId)
+      .maybeSingle();
     if (data) return data;
   }
 
-  const { data: created } = await supabase.from("conversations").insert({}).select("*").single();
+  const { data: created } = await supabase
+    .from("conversations")
+    .insert({ project_id: projectId })
+    .select("*")
+    .single();
   return created;
 }
 
-export async function listConversations(opts: { q?: string; status?: string } = {}) {
+export async function listConversations(projectId: string, opts: { q?: string; status?: string } = {}) {
   const supabase = getSupabaseAdmin();
-  let query = supabase.from("conversations").select("*").eq("status", opts.status ?? "active");
+  let query = supabase
+    .from("conversations")
+    .select("*")
+    .eq("project_id", projectId)
+    .eq("status", opts.status ?? "active");
   if (opts.q) query = query.ilike("title", `%${opts.q}%`);
   query = query.order("updated_at", { ascending: false }).limit(100);
   const { data } = await query;
@@ -64,19 +83,23 @@ export async function getSummary(conversationId: string): Promise<string> {
   return data?.summary ?? "";
 }
 
-export async function getRecentMemoryItems(limit = 8): Promise<{ category: string; content: string }[]> {
+export async function getRecentMemoryItems(
+  projectId: string,
+  limit = 8
+): Promise<{ category: string; content: string }[]> {
   const supabase = getSupabaseAdmin();
   const { data } = await supabase
     .from("memory_items")
     .select("category,content")
+    .eq("project_id", projectId)
     .order("updated_at", { ascending: false })
     .limit(limit);
   return data ?? [];
 }
 
-export async function getPreferences(): Promise<Record<string, string>> {
+export async function getPreferences(projectId: string): Promise<Record<string, string>> {
   const supabase = getSupabaseAdmin();
-  const { data } = await supabase.from("assistant_memory").select("key,value");
+  const { data } = await supabase.from("assistant_memory").select("key,value").eq("project_id", projectId);
   const map: Record<string, string> = {};
   for (const row of data ?? []) map[row.key as string] = row.value as string;
   return map;
@@ -141,10 +164,11 @@ const memoryExtractionSchema = z.object({
 
 /**
  * Extracts durable client-preference facts from a transcript chunk into
- * `memory_items`. Only called once per chunk (from `maybeSummarizeConversation`
- * below), so it never re-processes the same messages twice.
+ * `memory_items`, scoped to the project the conversation belongs to. Only
+ * called once per chunk (from `maybeSummarizeConversation` below), so it
+ * never re-processes the same messages twice.
  */
-async function extractMemoriesFromTranscript(conversationId: string, transcript: string) {
+async function extractMemoriesFromTranscript(projectId: string, conversationId: string, transcript: string) {
   const { object } = await withGroqRetry((model) =>
     generateObject({
       model,
@@ -157,6 +181,7 @@ async function extractMemoriesFromTranscript(conversationId: string, transcript:
   const supabase = getSupabaseAdmin();
   await supabase.from("memory_items").insert(
     object.facts.map((f) => ({
+      project_id: projectId,
       category: f.category,
       content: f.content,
       confidence: "inferred" as const,
@@ -172,7 +197,7 @@ async function extractMemoriesFromTranscript(conversationId: string, transcript:
  * `summarized_through_message_id` so each run only processes messages it
  * hasn't seen yet — both for the summary itself and for memory extraction.
  */
-export async function maybeSummarizeConversation(conversationId: string) {
+export async function maybeSummarizeConversation(projectId: string, conversationId: string) {
   const supabase = getSupabaseAdmin();
   const { count } = await supabase
     .from("messages")
@@ -228,7 +253,7 @@ export async function maybeSummarizeConversation(conversationId: string) {
     { onConflict: "conversation_id" }
   );
 
-  await extractMemoriesFromTranscript(conversationId, transcript).catch(() => {});
+  await extractMemoriesFromTranscript(projectId, conversationId, transcript).catch(() => {});
 }
 
 export interface MemorySearchResult {
@@ -238,14 +263,24 @@ export interface MemorySearchResult {
 
 /**
  * Cross-conversation retrieval, invoked by the `recall_memory` chat tool —
- * deliberately NOT always-on, so unrelated past conversations don't bleed
- * into the current one unless the model decides it's actually relevant.
+ * scoped to the active project and deliberately NOT always-on, so neither
+ * another project's data nor unrelated past conversations within this
+ * project bleed into the current one unless the model decides it's
+ * actually relevant.
  */
-export async function searchMemory(query: string, excludeConversationId?: string | null): Promise<MemorySearchResult> {
+export async function searchMemory(
+  projectId: string,
+  query: string,
+  excludeConversationId?: string | null
+): Promise<MemorySearchResult> {
   const supabase = getSupabaseAdmin();
   const [{ data: conversations }, { data: facts }] = await Promise.all([
-    supabase.rpc("search_conversation_summaries", { p_query: query, p_exclude_id: excludeConversationId ?? null }),
-    supabase.rpc("search_memory_items", { p_query: query }),
+    supabase.rpc("search_conversation_summaries", {
+      p_project_id: projectId,
+      p_query: query,
+      p_exclude_id: excludeConversationId ?? null,
+    }),
+    supabase.rpc("search_memory_items", { p_project_id: projectId, p_query: query }),
   ]);
 
   type SummaryRow = { conversation_id: string; title: string | null; summary: string; similarity: number };

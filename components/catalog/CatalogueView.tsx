@@ -7,8 +7,10 @@ import { CategoryFilterBar } from "@/components/catalog/CategoryFilterBar";
 import { ProductGrid } from "@/components/catalog/ProductGrid";
 import { AddProductDialog } from "@/components/catalog/AddProductDialog";
 import { useChat } from "@/components/chat/ChatContext";
+import { useProject } from "@/components/project/ProjectContext";
 
 export function CatalogueView() {
+  const { projectId } = useProject();
   const { catalogVersion, openProduct } = useChat();
   const [products, setProducts] = useState<Product[]>([]);
   const [categories, setCategories] = useState<(Category & { product_count: number })[]>([]);
@@ -20,20 +22,20 @@ export function CatalogueView() {
   const [showAdd, setShowAdd] = useState(false);
 
   useEffect(() => {
-    fetchCategories().then((r) => setCategories(r.categories)).catch(() => {});
-    fetchBrands().then((r) => setBrands(r.brands)).catch(() => {});
-  }, [catalogVersion]);
+    fetchCategories(projectId).then((r) => setCategories(r.categories)).catch(() => {});
+    fetchBrands(projectId).then((r) => setBrands(r.brands)).catch(() => {});
+  }, [projectId, catalogVersion]);
 
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect -- debounced fetch-on-change needs a loading flag
     setLoading(true);
     const handle = setTimeout(() => {
-      fetchProducts({ q: q || undefined, category: category || undefined, brand: brand || undefined })
+      fetchProducts(projectId, { q: q || undefined, category: category || undefined, brand: brand || undefined })
         .then((r) => setProducts(r.products))
         .finally(() => setLoading(false));
     }, 250);
     return () => clearTimeout(handle);
-  }, [q, category, brand, catalogVersion]);
+  }, [projectId, q, category, brand, catalogVersion]);
 
   return (
     <div className="flex min-h-full flex-col">

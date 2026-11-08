@@ -5,20 +5,22 @@ import { useEffect, useState } from "react";
 import { fetchBrands } from "@/lib/client/api";
 import type { Brand } from "@/lib/types";
 import { useChat } from "@/components/chat/ChatContext";
+import { useProject } from "@/components/project/ProjectContext";
 
 export function BrandDirectory() {
+  const { projectId } = useProject();
   const { catalogVersion } = useChat();
-  const [brands, setBrands] = useState<(Brand & { product_count: number })[]>([]);
+  const [brands, setBrands] = useState<(Brand & { product_count: number; is_owner?: boolean })[]>([]);
   const [q, setQ] = useState("");
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect -- fetch-on-change needs a loading flag
     setLoading(true);
-    fetchBrands(q || undefined)
+    fetchBrands(projectId, q || undefined)
       .then((r) => setBrands(r.brands))
       .finally(() => setLoading(false));
-  }, [q, catalogVersion]);
+  }, [projectId, q, catalogVersion]);
 
   return (
     <div className="px-6 py-6">
@@ -50,10 +52,17 @@ export function BrandDirectory() {
           {brands.map((b) => (
             <Link
               key={b.id}
-              href={`/brands/${b.id}`}
+              href={`/p/${projectId}/brands/${b.id}`}
               className="flex flex-col gap-1 rounded-xl border border-border bg-surface p-4 transition-colors hover:border-accent/50"
             >
-              <p className="font-serif text-base text-foreground">{b.name}</p>
+              <div className="flex items-center justify-between gap-2">
+                <p className="font-serif text-base text-foreground">{b.name}</p>
+                {b.is_owner === false && (
+                  <span className="flex-shrink-0 rounded-full border border-border px-2 py-0.5 text-[10px] text-muted">
+                    Shared
+                  </span>
+                )}
+              </div>
               <p className="text-xs text-muted">
                 {b.product_count} product{b.product_count === 1 ? "" : "s"}
                 {b.country ? ` · ${b.country}` : ""}

@@ -6,6 +6,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { ChatProvider, useChat } from "@/components/chat/ChatContext";
 import { ChatPanel } from "@/components/chat/ChatPanel";
 import { ProductDetailModal } from "@/components/catalog/ProductDetailModal";
+import { useProject } from "@/components/project/ProjectContext";
 
 const MIN_WIDTH = 320;
 const MAX_WIDTH = 640;
@@ -15,6 +16,7 @@ const COLLAPSED_KEY = "altossa-chat-collapsed";
 
 function Shell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
+  const { projectId, project } = useProject();
   const { selectedProduct, closeProduct } = useChat();
   const [mobileView, setMobileView] = useState<"catalogue" | "chat">("catalogue");
   const [chatWidth, setChatWidth] = useState(DEFAULT_WIDTH);
@@ -82,16 +84,31 @@ function Shell({ children }: { children: React.ReactNode }) {
     <div className="flex h-screen flex-col bg-background">
       <header className="flex flex-shrink-0 items-center justify-between border-b border-border bg-header px-6 py-3">
         <div className="flex items-center gap-8">
-          <Link href="/" className="font-serif text-xl tracking-tight text-foreground">
-            ALTOSSA
-          </Link>
+          <div className="flex items-center gap-3">
+            <Link href={`/p/${projectId}`} className="font-serif text-xl tracking-tight text-foreground">
+              ALTOSSA
+            </Link>
+            {project && (
+              <>
+                <span className="text-muted">/</span>
+                <span className="text-sm text-foreground">{project.name}</span>
+              </>
+            )}
+          </div>
           <nav className="hidden items-center gap-6 sm:flex">
-            {navLink("/", "Catalogue")}
-            {navLink("/brands", "Brands")}
-            {navLink("/inspiration", "Inspiration")}
+            {navLink(`/p/${projectId}`, "Catalogue")}
+            {navLink(`/p/${projectId}/brands`, "Brands")}
+            {navLink(`/p/${projectId}/inspiration`, "Inspiration")}
           </nav>
         </div>
         <div className="flex items-center gap-2">
+          <Link
+            href="/"
+            className="hidden items-center gap-1.5 rounded-full border border-border px-3 py-1.5 text-xs text-muted transition-colors hover:border-accent/50 hover:text-foreground sm:flex"
+            title="Switch project"
+          >
+            Switch project
+          </Link>
           <button
             onClick={() => setCollapsed((c) => !c)}
             className="hidden items-center gap-1.5 rounded-full border border-border px-3 py-1.5 text-xs text-muted transition-colors hover:border-accent/50 hover:text-foreground sm:flex"
@@ -154,9 +171,9 @@ function Shell({ children }: { children: React.ReactNode }) {
   );
 }
 
-export function AppShell({ children }: { children: React.ReactNode }) {
+export function AppShell({ projectId, children }: { projectId: string; children: React.ReactNode }) {
   return (
-    <ChatProvider>
+    <ChatProvider projectId={projectId}>
       <Shell>{children}</Shell>
     </ChatProvider>
   );
