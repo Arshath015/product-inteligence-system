@@ -3,7 +3,7 @@ import { z } from "zod";
 import { withGroqRetry } from "@/lib/groq/client";
 import { tavilyExtract } from "@/lib/tavily";
 import { tokensFrom } from "@/lib/textTokens";
-import { absolutize, fetchPageSignals, hasUsableSignal, type PageSignals } from "@/lib/pageSignals";
+import { absolutize, fetchPageSignals, hasUsableSignal, extractOrgNames, looksLikeSiteOwner, type PageSignals } from "@/lib/pageSignals";
 import type { ExtractedProductData } from "@/lib/types";
 
 const CATEGORY_SLUGS = [
@@ -311,10 +311,21 @@ export async function extractProductFromUrl(
   if (signals) {
     const fromJsonLd = productFromJsonLd(signals.jsonLd, finalUrl);
     if (fromJsonLd && fromJsonLd.images.length > 0) {
+      const host = hostOf(finalUrl);
+      // JSON-LD frequently omits `brand`/`manufacturer` even on otherwise
+      // complete product schemas — fall back to a byline/dataLayer signal
+      // pulled from the page itself rather than reporting no brand at all.
+      // Some sites' JSON-LD also literally sets brand to the retailer's own
+      // name (a seller/brand mixup in their schema), so apply the same
+      // site-owner guard here as the model path does below.
+      const jsonLdBrandIsSiteOwner = fromJsonLd.brandName
+        ? looksLikeSiteOwner(fromJsonLd.brandName, host, extractOrgNames(signals.jsonLd))
+        : false;
+      const brandName = (jsonLdBrandIsSiteOwner ? null : fromJsonLd.brandName) ?? signals.byline.brandName;
+      const designerName = signals.byline.designerName;
       const nameHints = buildNameHints(signals.title, finalUrl);
       const hints = Array.from(new Set([...nameHints, ...tokensFrom(fromJsonLd.name)]));
-      const host = hostOf(finalUrl);
-      const brandTokens = fromJsonLd.brandName ? tokensFrom(fromJsonLd.brandName) : host ? tokensFrom(host) : [];
+      const brandTokens = brandName ? tokensFrom(brandName) : host ? tokensFrom(host) : [];
       const ranked = rankImageCandidates(
         [
           { urls: fromJsonLd.images, tier: 0 },
@@ -327,8 +338,8 @@ export async function extractProductFromUrl(
       const imageUrls = ranked.slice(0, 10).map((c) => c.url);
       return {
         name: fromJsonLd.name,
-        brandName: fromJsonLd.brandName,
-        designerName: null,
+        brandName,
+        designerName,
         categoryHint: fromJsonLd.categoryHint,
         description: fromJsonLd.description,
         materials: null,
@@ -350,6 +361,8 @@ export async function extractProductFromUrl(
         `Page title: ${signals.title ?? ""}`,
         `Meta description: ${signals.metaDescription ?? ""}`,
         signals.jsonLd.length ? `JSON-LD data: ${JSON.stringify(signals.jsonLd).slice(0, 3000)}` : "",
+        signals.byline.brandName ? `A byline elsewhere on the page names "${signals.byline.brandName}" as the brand/maker — use it for brandName unless the page content clearly says otherwise.` : "",
+        signals.byline.designerName ? `A byline elsewhere on the page names "${signals.byline.designerName}" as the individual designer — use it for designerName unless the page content clearly says otherwise.` : "",
         `Page text: ${signals.textSnippet}`,
       ]
         .filter(Boolean)
@@ -360,7 +373,7 @@ export async function extractProductFromUrl(
     generateObject({
       model,
       schema: extractionSchema,
-      prompt: `Extract structured product information for a luxury furniture/interior-design catalogue from the following webpage content. The source URL is ${url}. If a value is not clearly present, use null (or "other" for categoryHint). If the content doesn't actually describe a specific product at all, return an empty string for name — do not invent one.\n\n${context}`,
+      prompt: `Extract structured product information for a luxury furniture/interior-design catalogue from the following webpage content. The source URL is ${url}. If a value is not clearly present, use null (or "other" for categoryHint). If the content doesn't actually describe a specific product at all, return an empty string for name — do not invent one. Distinguish the product's brand/manufacturer from the retailer or marketplace selling it (the website itself is often just the retailer, not the brand) and from the individual designer credited for it, when those are different.\n\n${context}`,
     })
   );
 
@@ -369,11 +382,18 @@ export async function extractProductFromUrl(
   }
 
   const host = hostOf(finalUrl);
+  // The model sometimes infers the retailer's own name as the brand (e.g.
+  // from a page title like "Mint – Poodle Armchair") when no real
+  // product-specific brand is stated anywhere — never trust that guess.
+  const orgNames = signals ? extractOrgNames(signals.jsonLd) : [];
+  const modelBrandIsSiteOwner = object.brandName ? looksLikeSiteOwner(object.brandName, host, orgNames) : false;
+  const brandName = (modelBrandIsSiteOwner ? null : object.brandName) ?? signals?.byline.brandName ?? null;
+  const designerName = object.designerName ?? signals?.byline.designerName ?? null;
 
   // Re-score with the model's resolved name/brand now that we have them —
   // more precise than the page-title/URL-slug hints alone.
   const hints = Array.from(new Set([...nameHints, ...tokensFrom(object.name)]));
-  const brandTokens = object.brandName ? tokensFrom(object.brandName) : host ? tokensFrom(host) : [];
+  const brandTokens = brandName ? tokensFrom(brandName) : host ? tokensFrom(host) : [];
 
   const ranked = rankImageCandidates(
     [
@@ -393,8 +413,8 @@ export async function extractProductFromUrl(
 
   return {
     name: object.name,
-    brandName: object.brandName,
-    designerName: object.designerName,
+    brandName,
+    designerName,
     categoryHint: object.categoryHint,
     description: object.description,
     materials: object.materials,

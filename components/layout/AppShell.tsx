@@ -75,6 +75,14 @@ function Shell({ children }: { children: React.ReactNode }) {
   const navLink = (href: string, label: string) => (
     <Link
       href={href}
+      // These section routes are dynamic (they live under /p/[projectId]),
+      // so Next's default "auto" prefetch — which only prefetches a static
+      // shell — prefetches nothing for them. Force a full prefetch instead:
+      // the 4 tabs are always visible in the header, so this warms the
+      // router cache for all of them right away and makes switching
+      // between Catalogue/Brands/Manufacturers/Inspiration instant instead
+      // of waiting on a cold RSC fetch on the first click to each tab.
+      prefetch={true}
       className={`text-sm transition-colors ${
         pathname === href ? "text-foreground" : "text-muted hover:text-foreground"
       }`}

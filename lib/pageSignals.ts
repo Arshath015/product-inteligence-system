@@ -1,6 +1,7 @@
 import * as cheerio from "cheerio";
 import type { Cheerio, CheerioAPI } from "cheerio";
 import type { AnyNode } from "domhandler";
+import { tokensFrom } from "@/lib/textTokens";
 
 export const BROWSER_HEADERS = {
   "User-Agent":
@@ -37,6 +38,11 @@ export interface PageSignals {
   jsonLdTypes: string[];
   links: { href: string; text: string }[];
   textSnippet: string;
+  /** Designer/brand names pulled from a page byline, ecommerce dataLayer, or
+   * description text — a fallback signal for when JSON-LD itself omits
+   * `brand`/`manufacturer` (common even on well-structured product pages).
+   * Never the retailer/site's own name — see `looksLikeSiteOwner`. */
+  byline: BylineSignals;
 }
 
 // Containers that are never the product itself — promotional/consent/site-chrome
@@ -58,6 +64,147 @@ const PRODUCT_CONTAINER_KEYWORDS = [
   "product-photos", "product-media", "pdp-image", "gallery", "main-image",
   "hero-image", "item-image", "product-detail", "product-slider", "product-carousel",
 ];
+
+// Matches element class/id tokens that mark a byline as naming the
+// individual DESIGNER credited for the piece — e.g. "designer-name",
+// "designer-single", and the common real-world typo "desinger-single"
+// (swapped letters). Deliberately not required to end in "-name": themes
+// label a single designer byline element many ways, and in practice the
+// first such element on a product page is reliably the byline itself.
+const DESIGNER_CLASS_PATTERN = /des(ign|ing)er/i;
+
+// Matches element class/id tokens that mark a byline as naming the
+// commercial brand/manufacturer/maker/vendor — e.g. "pp-maker-name",
+// "brand-name", "vendor-name". Kept to a tighter "-name" suffix than the
+// designer pattern since "brand"/"maker"/"vendor" alone are common words
+// that show up in unrelated site chrome (nav, footer links).
+const BRAND_CLASS_PATTERN = /(maker|brand|vendor|artist|creator)s?-?name/i;
+
+export function extractOrgNames(jsonLd: unknown[]): string[] {
+  const names: string[] = [];
+  const visit = (node: unknown) => {
+    if (!node || typeof node !== "object") return;
+    const obj = node as Record<string, unknown>;
+    if ((obj["@type"] === "Organization" || obj["@type"] === "WebSite") && typeof obj.name === "string") {
+      names.push(obj.name);
+    }
+    for (const key of Object.keys(obj)) {
+      if (key === "@type") continue;
+      const val = obj[key];
+      if (Array.isArray(val)) val.forEach(visit);
+      else if (val && typeof val === "object") visit(val);
+    }
+  };
+  jsonLd.forEach(visit);
+  return names;
+}
+
+/**
+ * True if `candidate` is just the site/retailer's own name rather than a
+ * distinct brand/designer — compared against the hostname and any
+ * Organization/WebSite names found in the page's own JSON-LD. Never trust a
+ * byline-style signal that turns out to just be "by <this website>".
+ */
+export function looksLikeSiteOwner(candidate: string, host: string | null, orgNames: string[]): boolean {
+  const cTokens = tokensFrom(candidate);
+  if (cTokens.length === 0) return true;
+  const overlapRatio = (tokens: string[]): number => {
+    if (tokens.length === 0) return 0;
+    const set = new Set(tokens);
+    const overlap = cTokens.filter((t) => set.has(t)).length;
+    return overlap / Math.min(cTokens.length, tokens.length);
+  };
+  if (host && overlapRatio(tokensFrom(host)) >= 0.8) return true;
+  return orgNames.some((org) => overlapRatio(tokensFrom(org)) >= 0.8);
+}
+
+export interface BylineSignals {
+  /** A commercial brand/manufacturer/maker name — distinct from the individual designer and from the retailer. */
+  brandName: string | null;
+  /** An individual designer credited for the piece. */
+  designerName: string | null;
+}
+
+// Trigger words that plausibly introduce a "by <name>" authorship phrase
+// about the item itself — as opposed to "Established in 1998 by ..." or
+// other retailer/company-history prose that happens to contain "by".
+const AUTHORSHIP_TRIGGERS = ["designed", "created", "crafted", "made", "piece", "handmade", "handcrafted"];
+
+/**
+ * Pulls designer/brand byline signals out of the page — used as a fallback
+ * when JSON-LD doesn't carry a `brand`/`manufacturer` field, which is common
+ * even on otherwise well-structured product pages (the brand/designer is
+ * only in a visible byline, an ecommerce analytics dataLayer, or prose).
+ * Distinguishes an individual DESIGNER byline from a commercial
+ * BRAND/maker/vendor byline so the two are never conflated, and checks every
+ * candidate against the site's own name so the retailer is never mistaken
+ * for either.
+ */
+function extractBylineSignals(
+  $: CheerioAPI,
+  html: string,
+  host: string | null,
+  jsonLd: unknown[],
+  metaDescription: string | null,
+  title: string | null
+): BylineSignals {
+  const orgNames = extractOrgNames(jsonLd);
+  const accept = (candidate: string | undefined | null): string | null => {
+    const trimmed = candidate?.trim();
+    if (!trimmed || trimmed.length > 60) return null;
+    if (looksLikeSiteOwner(trimmed, host, orgNames)) return null;
+    return trimmed;
+  };
+
+  let designerName: string | null = null;
+  let brandName: string | null = null;
+  $("a, span, div, p, h1, h2, h3, h4").each((_, el) => {
+    if (designerName && brandName) return false;
+    const node = $(el);
+    const idClass = `${node.attr("id") ?? ""} ${node.attr("class") ?? ""}`.toLowerCase();
+    if (!designerName && DESIGNER_CLASS_PATTERN.test(idClass)) {
+      const found = accept(node.text());
+      if (found) designerName = found;
+    }
+    if (!brandName && BRAND_CLASS_PATTERN.test(idClass)) {
+      const found = accept(node.text());
+      if (found) brandName = found;
+    }
+  });
+
+  if (!brandName) {
+    const dataLayerMatch = html.match(/item_brand["']?\s*:\s*["']([^"'{}]{1,80})["']/i);
+    brandName = accept(dataLayerMatch?.[1]);
+  }
+
+  // A "by <name>" phrase in the description is only trustworthy as a
+  // product-authorship signal when it's actually introduced in that
+  // context — e.g. "the Terra Chair by Tom Blackmore" or "designed by
+  // Tom Blackmore" — not "Established in 1998 by <gallery founder>", which
+  // is prose about the retailer's own history and just happens to contain
+  // "by". Require the text right before the match to reference either the
+  // product's own title or an authorship trigger word.
+  if (!brandName && !designerName && metaDescription) {
+    const titleTokens = new Set(title ? tokensFrom(title) : []);
+    const re = /\bby\s+([A-Z][A-Za-z0-9&.'’\- ]{1,50}?)(?:,|\.|\s+exclusively|\s+available|$)/g;
+    let match: RegExpExecArray | null;
+    while ((match = re.exec(metaDescription))) {
+      const precedingContext = metaDescription.slice(Math.max(0, match.index - 60), match.index).toLowerCase();
+      const precedingTokens = tokensFrom(precedingContext);
+      const hasTitleOverlap = precedingTokens.some((t) => titleTokens.has(t));
+      const hasTrigger = AUTHORSHIP_TRIGGERS.some((w) => precedingContext.includes(w));
+      if (hasTitleOverlap || hasTrigger) {
+        const found = accept(match[1]);
+        if (found) {
+          brandName = found;
+          break;
+        }
+      }
+    }
+  }
+
+  return { brandName, designerName };
+}
 
 /** Picks the highest-resolution URL from a `srcset`-style attribute ("url 400w, url 800w, ..."). */
 function bestFromSrcset(value: string | undefined): string | undefined {
@@ -186,6 +333,14 @@ export async function fetchPageSignals(url: string): Promise<PageSignals> {
 
   const bodyText = $("body").text().replace(/\s+/g, " ").trim().slice(0, 6000);
 
+  let host: string | null = null;
+  try {
+    host = new URL(finalUrl).hostname.replace(/^www\./, "");
+  } catch {
+    // ignore
+  }
+  const byline = extractBylineSignals($, html, host, jsonLd, metaDescription, title);
+
   return {
     html,
     finalUrl,
@@ -198,6 +353,7 @@ export async function fetchPageSignals(url: string): Promise<PageSignals> {
     jsonLdTypes,
     links,
     textSnippet: bodyText,
+    byline,
   };
 }
 
