@@ -6,6 +6,7 @@ import { storeBestProductImage } from "@/lib/images";
 import { slugify } from "@/lib/slug";
 import { getProductWithRelations, logActivity } from "@/lib/products";
 import type { Product } from "@/lib/types";
+import type { PageSignals } from "@/lib/pageSignals";
 
 export interface IngestResult {
   status: "created" | "duplicate_updated" | "duplicate_unchanged" | "failed";
@@ -45,12 +46,16 @@ async function uniqueSlug(projectId: string, base: string): Promise<string> {
  * Idempotent per project, which matters because a failed Groq key can cause
  * the whole chat turn to retry.
  */
-export async function ingestProductUrl(projectId: string, url: string): Promise<IngestResult> {
+export async function ingestProductUrl(
+  projectId: string,
+  url: string,
+  preloadedSignals?: PageSignals | null
+): Promise<IngestResult> {
   const supabase = getSupabaseAdmin();
 
   let extracted;
   try {
-    extracted = await extractProductFromUrl(url);
+    extracted = await extractProductFromUrl(url, preloadedSignals);
   } catch (err) {
     return {
       status: "failed",

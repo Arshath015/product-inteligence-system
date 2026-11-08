@@ -1,9 +1,9 @@
-import * as cheerio from "cheerio";
 import { generateObject } from "ai";
 import { z } from "zod";
 import { withGroqRetry } from "@/lib/groq/client";
 import { tavilyExtract } from "@/lib/tavily";
 import { tokensFrom } from "@/lib/textTokens";
+import { absolutize, fetchPageSignals, hasUsableSignal, type PageSignals } from "@/lib/pageSignals";
 import type { ExtractedProductData } from "@/lib/types";
 
 const CATEGORY_SLUGS = [
@@ -22,6 +22,7 @@ const CATEGORY_SLUGS = [
   "outdoor",
   "other",
 ] as const;
+type CategorySlug = (typeof CATEGORY_SLUGS)[number];
 
 const extractionSchema = z.object({
   name: z.string().describe("The product's name/model, without the brand name prefixed"),
@@ -33,32 +34,6 @@ const extractionSchema = z.object({
   dimensions: z.string().nullable(),
   priceText: z.string().nullable().describe("Price as displayed, with currency, or null"),
 });
-
-const BROWSER_HEADERS = {
-  "User-Agent":
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
-  Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
-};
-
-function absolutize(url: string, base: string): string | null {
-  try {
-    return new URL(url, base).toString();
-  } catch {
-    return null;
-  }
-}
-
-interface PageSignals {
-  html: string | null;
-  finalUrl: string;
-  title: string | null;
-  metaDescription: string | null;
-  canonicalUrl: string | null;
-  ogImages: string[];
-  galleryImages: string[];
-  jsonLd: unknown[];
-  textSnippet: string;
-}
 
 // Filenames/paths containing these tokens are almost never the product photo itself.
 const IMAGE_BLACKLIST = [
@@ -129,77 +104,6 @@ function rankImageCandidates(
     .sort((a, b) => b.score - a.score);
 }
 
-async function fetchPageSignals(url: string): Promise<PageSignals> {
-  const res = await fetch(url, {
-    headers: BROWSER_HEADERS,
-    redirect: "follow",
-  });
-  const finalUrl = res.url || url;
-  if (!res.ok) {
-    throw new Error(`Fetch failed with status ${res.status}`);
-  }
-  const html = await res.text();
-  const $ = cheerio.load(html);
-
-  const title = $("title").first().text().trim() || null;
-  const metaDescription =
-    $('meta[name="description"]').attr("content")?.trim() ||
-    $('meta[property="og:description"]').attr("content")?.trim() ||
-    null;
-  const canonicalRaw = $('link[rel="canonical"]').attr("href");
-  const canonicalUrl = canonicalRaw ? absolutize(canonicalRaw, finalUrl) : null;
-
-  const ogImages: string[] = [];
-  $('meta[property="og:image"], meta[property="og:image:url"], meta[name="twitter:image"]').each(
-    (_, el) => {
-      const content = $(el).attr("content");
-      const abs = content ? absolutize(content, finalUrl) : null;
-      if (abs) ogImages.push(abs);
-    }
-  );
-
-  const jsonLd: unknown[] = [];
-  $('script[type="application/ld+json"]').each((_, el) => {
-    const raw = $(el).contents().text();
-    try {
-      const parsed = JSON.parse(raw);
-      if (Array.isArray(parsed)) jsonLd.push(...parsed);
-      else jsonLd.push(parsed);
-    } catch {
-      // ignore malformed JSON-LD blocks
-    }
-  });
-
-  // Real <img> tags on the page — the only signal available on sites that
-  // don't mark products up with JSON-LD and only expose a generic og:image.
-  const galleryImages: string[] = [];
-  $("img").each((_, el) => {
-    const raw =
-      $(el).attr("src") ||
-      $(el).attr("data-src") ||
-      $(el).attr("data-lazy-src") ||
-      $(el).attr("data-original") ||
-      ($(el).attr("srcset") || "").split(",")[0]?.trim().split(" ")[0];
-    if (!raw || raw.startsWith("data:")) return;
-    const abs = absolutize(raw, finalUrl);
-    if (abs) galleryImages.push(abs);
-  });
-
-  const bodyText = $("body").text().replace(/\s+/g, " ").trim().slice(0, 6000);
-
-  return {
-    html,
-    finalUrl,
-    title,
-    metaDescription,
-    canonicalUrl,
-    ogImages,
-    galleryImages,
-    jsonLd,
-    textSnippet: bodyText,
-  };
-}
-
 function imagesFromJsonLd(jsonLd: unknown[], baseUrl: string): string[] {
   const urls: string[] = [];
   const visit = (node: unknown) => {
@@ -236,26 +140,95 @@ function imagesFromJsonLd(jsonLd: unknown[], baseUrl: string): string[] {
   return urls;
 }
 
-/**
- * A direct fetch can return 200 with an HTML shell that has no real
- * content — a JS-rendered SPA page before hydration, or a bot-detection
- * page that doesn't bother 403ing. Either way there's nothing here worth
- * sending to the model, so this is treated the same as a failed fetch and
- * escalates to the next extraction method.
- */
-function hasUsableSignal(
-  signals: PageSignals | null,
-  fallbackText: string | null,
-  fallbackImages: string[]
-): boolean {
-  if (signals) {
-    const substantialText = signals.textSnippet.length > 150;
-    const hasMeta = Boolean(signals.title || signals.metaDescription);
-    const hasStructuredData = signals.jsonLd.length > 0;
-    const hasImages = signals.ogImages.length > 0 || signals.galleryImages.length > 0;
-    return substantialText || hasMeta || hasStructuredData || hasImages;
+const CATEGORY_KEYWORDS: [CategorySlug, string[]][] = [
+  ["sofas", ["sofa", "settee", "couch", "sectional"]],
+  ["armchairs", ["armchair", "accent chair", "lounge chair", "easy chair"]],
+  ["lounge-chairs", ["lounge chair", "recliner", "chaise"]],
+  ["dining-chairs", ["dining chair", "chair"]],
+  ["coffee-tables", ["coffee table", "cocktail table", "low table"]],
+  ["side-tables", ["side table", "end table", "nightstand"]],
+  ["tables", ["table", "desk"]],
+  ["beds", ["bed", "headboard"]],
+  ["lighting", ["lamp", "light", "lighting", "chandelier", "sconce", "pendant"]],
+  ["rugs", ["rug", "carpet"]],
+  ["storage", ["cabinet", "shelf", "shelving", "storage", "sideboard", "credenza", "bookcase"]],
+  ["outdoor", ["outdoor", "patio", "garden"]],
+  ["accessories", ["vase", "accessory", "decor", "mirror", "tray"]],
+];
+
+/** Cheap keyword match against a free-text product-type string — no LLM needed. */
+function guessCategorySlug(text: string | null | undefined): CategorySlug {
+  if (!text) return "other";
+  const lower = text.toLowerCase();
+  for (const [slug, keywords] of CATEGORY_KEYWORDS) {
+    if (keywords.some((k) => lower.includes(k))) return slug;
   }
-  return Boolean((fallbackText && fallbackText.length > 150) || fallbackImages.length > 0);
+  return "other";
+}
+
+interface JsonLdProduct {
+  name: string;
+  brandName: string | null;
+  description: string | null;
+  priceText: string | null;
+  categoryHint: CategorySlug;
+  images: string[];
+}
+
+function textOf(val: unknown): string | null {
+  if (typeof val === "string") return val.trim() || null;
+  if (val && typeof val === "object") {
+    const name = (val as Record<string, unknown>).name;
+    if (typeof name === "string") return name.trim() || null;
+  }
+  return null;
+}
+
+/**
+ * Pulls a complete product record straight out of schema.org JSON-LD when
+ * the page provides one — no model call needed. Returns null if the
+ * JSON-LD doesn't actually describe a single product with a name.
+ */
+function productFromJsonLd(jsonLd: unknown[], baseUrl: string): JsonLdProduct | null {
+  let found: Record<string, unknown> | null = null;
+  const visit = (node: unknown) => {
+    if (found || !node || typeof node !== "object") return;
+    const obj = node as Record<string, unknown>;
+    if (obj["@type"] === "Product" && typeof obj.name === "string" && obj.name.trim()) {
+      found = obj;
+      return;
+    }
+    if (Array.isArray(obj["@graph"])) (obj["@graph"] as unknown[]).forEach(visit);
+  };
+  jsonLd.forEach(visit);
+  if (!found) return null;
+  const p = found as Record<string, unknown>;
+
+  const name = (p.name as string).trim();
+  const brandName = textOf(p.brand) ?? textOf(p.manufacturer);
+  const description = typeof p.description === "string" ? p.description.trim().slice(0, 600) : null;
+
+  let priceText: string | null = null;
+  const offers = p.offers;
+  const offer = Array.isArray(offers) ? offers[0] : offers;
+  if (offer && typeof offer === "object") {
+    const o = offer as Record<string, unknown>;
+    const price = o.price;
+    const currency = o.priceCurrency;
+    if (price != null) priceText = currency ? `${currency} ${price}` : String(price);
+  }
+
+  const categorySource = [textOf(p.category), name, description ?? ""].filter(Boolean).join(" ");
+  const images = imagesFromJsonLd([p], baseUrl);
+
+  return {
+    name,
+    brandName,
+    description,
+    priceText,
+    categoryHint: guessCategorySlug(categorySource),
+    images,
+  };
 }
 
 /**
@@ -268,21 +241,27 @@ function hasUsableSignal(
  * can't read. If neither method produces anything usable, this throws
  * instead of asking the model to invent a product from nothing — callers
  * (lib/ingest.ts) must not create a catalogue record in that case.
+ *
+ * `preloaded` lets a caller that already fetched the page (e.g. the bulk
+ * classifier) hand the signals over instead of fetching twice.
  */
-export async function extractProductFromUrl(url: string): Promise<ExtractedProductData> {
-  let signals: PageSignals | null = null;
+export async function extractProductFromUrl(
+  url: string,
+  preloaded?: PageSignals | null
+): Promise<ExtractedProductData> {
+  let signals: PageSignals | null = preloaded ?? null;
   let fallbackText: string | null = null;
   let fallbackImages: string[] = [];
-  let finalUrl = url;
+  let finalUrl = signals?.finalUrl ?? url;
 
-  try {
-    const fetched = await fetchPageSignals(url);
-    finalUrl = fetched.finalUrl;
-    if (hasUsableSignal(fetched, null, [])) {
-      signals = fetched;
+  if (!signals) {
+    try {
+      const fetched = await fetchPageSignals(url);
+      finalUrl = fetched.finalUrl;
+      if (hasUsableSignal(fetched)) signals = fetched;
+    } catch {
+      // network/DNS/HTTP failure — fall through to the Tavily escalation below
     }
-  } catch {
-    // network/DNS/HTTP failure — fall through to the Tavily escalation below
   }
 
   if (!signals) {
@@ -293,10 +272,46 @@ export async function extractProductFromUrl(url: string): Promise<ExtractedProdu
     }
   }
 
-  if (!hasUsableSignal(signals, fallbackText, fallbackImages)) {
+  if (!hasUsableSignal(signals) && !((fallbackText && fallbackText.length > 150) || fallbackImages.length > 0)) {
     throw new Error(
       "Couldn't retrieve any readable content from that page — it may be unreachable, blocked, or require JavaScript rendering that isn't supported."
     );
+  }
+
+  // Fast path: schema.org JSON-LD already gives us a named product with at
+  // least one image — skip the model call entirely.
+  if (signals) {
+    const fromJsonLd = productFromJsonLd(signals.jsonLd, finalUrl);
+    if (fromJsonLd && fromJsonLd.images.length > 0) {
+      const nameHints = buildNameHints(signals.title, finalUrl);
+      const hints = Array.from(new Set([...nameHints, ...tokensFrom(fromJsonLd.name)]));
+      const host = hostOf(finalUrl);
+      const brandTokens = fromJsonLd.brandName ? tokensFrom(fromJsonLd.brandName) : host ? tokensFrom(host) : [];
+      const ranked = rankImageCandidates(
+        [
+          { urls: fromJsonLd.images, tier: 0 },
+          { urls: signals.galleryImages, tier: 1 },
+          { urls: signals.ogImages, tier: 2 },
+        ],
+        hints,
+        brandTokens
+      );
+      const imageUrls = ranked.slice(0, 10).map((c) => c.url);
+      return {
+        name: fromJsonLd.name,
+        brandName: fromJsonLd.brandName,
+        designerName: null,
+        categoryHint: fromJsonLd.categoryHint,
+        description: fromJsonLd.description,
+        materials: null,
+        dimensions: null,
+        priceText: fromJsonLd.priceText,
+        imageUrls,
+        imagesLowConfidence: ranked.length === 0 || ranked[0].score < 5,
+        canonicalUrl: signals.canonicalUrl ?? finalUrl,
+        sourceDomain: host,
+      };
+    }
   }
 
   const jsonLdImages = signals ? imagesFromJsonLd(signals.jsonLd, finalUrl) : [];
@@ -325,13 +340,7 @@ export async function extractProductFromUrl(url: string): Promise<ExtractedProdu
     throw new Error("Couldn't identify a specific product from that page's content.");
   }
 
-  const host = (() => {
-    try {
-      return new URL(finalUrl).hostname.replace(/^www\./, "");
-    } catch {
-      return null;
-    }
-  })();
+  const host = hostOf(finalUrl);
 
   // Re-score with the model's resolved name/brand now that we have them —
   // more precise than the page-title/URL-slug hints alone.
@@ -368,4 +377,12 @@ export async function extractProductFromUrl(url: string): Promise<ExtractedProdu
     canonicalUrl: signals?.canonicalUrl ?? finalUrl,
     sourceDomain: host,
   };
+}
+
+function hostOf(url: string): string | null {
+  try {
+    return new URL(url).hostname.replace(/^www\./, "");
+  } catch {
+    return null;
+  }
 }

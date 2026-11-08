@@ -1,4 +1,4 @@
-import * as cheerio from "cheerio";
+import { fetchPageSignals, type PageSignals } from "@/lib/pageSignals";
 import { tavilyExtract } from "@/lib/tavily";
 
 export interface InspirationExtraction {
@@ -10,18 +10,16 @@ export interface InspirationExtraction {
   limited: boolean; // true when the source blocked/limited extraction and we fell back
 }
 
-const BROWSER_HEADERS = {
-  "User-Agent":
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
-  Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
-};
-
-function absolutize(url: string, base: string): string | null {
-  try {
-    return new URL(url, base).toString();
-  } catch {
-    return null;
-  }
+function fromSignals(url: string, signals: PageSignals): InspirationExtraction | null {
+  if (!signals.title && !signals.metaDescription && signals.ogImages.length === 0) return null;
+  return {
+    title: signals.title,
+    description: signals.metaDescription,
+    caption: signals.metaDescription,
+    imageUrls: Array.from(new Set(signals.ogImages)),
+    canonicalUrl: signals.canonicalUrl ?? signals.finalUrl ?? url,
+    limited: false,
+  };
 }
 
 /**
@@ -30,46 +28,19 @@ function absolutize(url: string, base: string): string | null {
  * attempts to log in or bypass any access control. If a platform blocks
  * the request or renders nothing useful server-side, falls back to Tavily
  * extract, and ultimately to just saving the bare URL (`limited: true`).
+ *
+ * `preloaded` lets a caller that already fetched the page (the bulk
+ * ingest pipeline) hand over the signals instead of fetching twice.
  */
-export async function extractInspirationMeta(url: string): Promise<InspirationExtraction> {
+export async function extractInspirationMeta(
+  url: string,
+  preloaded?: PageSignals | null
+): Promise<InspirationExtraction> {
   try {
-    const res = await fetch(url, { headers: BROWSER_HEADERS, redirect: "follow" });
-    const finalUrl = res.url || url;
-    if (!res.ok) throw new Error(`status ${res.status}`);
-
-    const html = await res.text();
-    const $ = cheerio.load(html);
-
-    const title =
-      $('meta[property="og:title"]').attr("content")?.trim() || $("title").first().text().trim() || null;
-    const description =
-      $('meta[property="og:description"]').attr("content")?.trim() ||
-      $('meta[name="description"]').attr("content")?.trim() ||
-      null;
-    const canonicalRaw = $('link[rel="canonical"]').attr("href");
-    const canonicalUrl = (canonicalRaw ? absolutize(canonicalRaw, finalUrl) : null) ?? finalUrl;
-
-    const imageUrls: string[] = [];
-    $('meta[property="og:image"], meta[property="og:image:secure_url"], meta[name="twitter:image"]').each(
-      (_, el) => {
-        const content = $(el).attr("content");
-        const abs = content ? absolutize(content, finalUrl) : null;
-        if (abs) imageUrls.push(abs);
-      }
-    );
-
-    if (!title && !description && imageUrls.length === 0) {
-      throw new Error("no usable metadata on page (likely login-gated)");
-    }
-
-    return {
-      title,
-      description,
-      caption: description,
-      imageUrls: Array.from(new Set(imageUrls)),
-      canonicalUrl,
-      limited: false,
-    };
+    const signals = preloaded ?? (await fetchPageSignals(url));
+    const result = fromSignals(url, signals);
+    if (result) return result;
+    throw new Error("no usable metadata on page (likely login-gated)");
   } catch {
     const [extracted] = await tavilyExtract([url]).catch(() => []);
     if (extracted && (extracted.raw_content || (extracted.images && extracted.images.length))) {

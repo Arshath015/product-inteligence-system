@@ -97,6 +97,7 @@ export interface Inspiration {
   related_product_id: string | null;
   status: "active" | "archived";
   created_at: string;
+  is_owner?: boolean;
 }
 
 export interface Conversation {

@@ -1,5 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
-import { reuseFromProject, removeBrandReference, removeProductReference } from "@/lib/projects";
+import {
+  reuseFromProject,
+  removeBrandReference,
+  removeProductReference,
+  removeInspirationReference,
+} from "@/lib/projects";
 
 type Params = { params: Promise<{ id: string }> };
 
@@ -14,8 +19,10 @@ export async function POST(req: NextRequest, { params }: Params) {
     sourceProjectId: body.sourceProjectId,
     allProducts: Boolean(body.allProducts),
     allBrands: Boolean(body.allBrands),
+    allInspirations: Boolean(body.allInspirations),
     productIds: Array.isArray(body.productIds) ? body.productIds : undefined,
     brandIds: Array.isArray(body.brandIds) ? body.brandIds : undefined,
+    inspirationIds: Array.isArray(body.inspirationIds) ? body.inspirationIds : undefined,
   });
 
   return NextResponse.json(result);
@@ -28,8 +35,10 @@ export async function DELETE(req: NextRequest, { params }: Params) {
     await removeProductReference(id, body.productId);
   } else if (body?.brandId) {
     await removeBrandReference(id, body.brandId);
+  } else if (body?.inspirationId) {
+    await removeInspirationReference(id, body.inspirationId);
   } else {
-    return NextResponse.json({ error: "productId or brandId is required" }, { status: 400 });
+    return NextResponse.json({ error: "productId, brandId, or inspirationId is required" }, { status: 400 });
   }
   return NextResponse.json({ ok: true });
 }

@@ -4,6 +4,7 @@ import { findAndUploadImage } from "@/lib/images";
 import { classifyUrl, type LinkType } from "@/lib/linkRouter";
 import { logActivity } from "@/lib/products";
 import type { Inspiration } from "@/lib/types";
+import type { PageSignals } from "@/lib/pageSignals";
 
 export interface SaveInspirationResult {
   status: "created" | "duplicate" | "failed";
@@ -25,6 +26,16 @@ function toInspirationPlatform(linkType: LinkType): Inspiration["platform"] {
   return linkType === "product" ? "manufacturer" : linkType;
 }
 
+async function ensureInspirationVisible(projectId: string, inspirationId: string) {
+  const supabase = getSupabaseAdmin();
+  await supabase
+    .from("project_inspirations")
+    .upsert(
+      { project_id: projectId, inspiration_id: inspirationId },
+      { onConflict: "project_id,inspiration_id", ignoreDuplicates: true }
+    );
+}
+
 /**
  * Saves a Pinterest/Instagram/other inspiration link. Deduped by canonical
  * URL. Never attempts to log in or bypass access controls — if the
@@ -34,19 +45,46 @@ function toInspirationPlatform(linkType: LinkType): Inspiration["platform"] {
 export async function saveInspirationUrl(
   projectId: string,
   url: string,
-  platformHint?: LinkType
+  platformHint?: LinkType,
+  preloadedSignals?: PageSignals | null,
+  extraTags?: string[]
 ): Promise<SaveInspirationResult> {
   const supabase = getSupabaseAdmin();
   const platform = toInspirationPlatform(platformHint ?? classifyUrl(url));
 
-  const meta = await extractInspirationMeta(url);
+  const meta = await extractInspirationMeta(url, preloadedSignals);
 
-  const { data: existing } = await supabase
-    .from("inspirations")
-    .select("*")
-    .eq("project_id", projectId)
-    .eq("canonical_url", meta.canonicalUrl)
-    .maybeSingle();
+  const { data: visibleRows, error: visibleError } = await supabase
+    .from("project_inspirations")
+    .select("inspiration_id")
+    .eq("project_id", projectId);
+
+  // Falls back to the pre-junction-table owning-project check if the
+  // project_inspirations migration hasn't been applied yet (missing-table
+  // error) — duplicate detection for this project's own saves must never
+  // depend on an optional migration having run.
+  const existing = visibleError
+    ? (
+        await supabase
+          .from("inspirations")
+          .select("*")
+          .eq("project_id", projectId)
+          .eq("canonical_url", meta.canonicalUrl)
+          .maybeSingle()
+      ).data
+    : (
+        await supabase
+          .from("inspirations")
+          .select("*")
+          .eq("canonical_url", meta.canonicalUrl)
+          .in(
+            "id",
+            (visibleRows ?? []).map((r) => r.inspiration_id as string).length > 0
+              ? (visibleRows ?? []).map((r) => r.inspiration_id as string)
+              : ["00000000-0000-0000-0000-000000000000"]
+          )
+          .maybeSingle()
+      ).data;
 
   if (existing) {
     return {
@@ -67,13 +105,36 @@ export async function saveInspirationUrl(
       description: meta.description,
       caption: meta.caption,
       image_status: "pending",
+      tags: extraTags ?? [],
     })
     .select("*")
     .single();
 
   if (error || !created) {
+    // A unique-constraint hit here means the pre-check's visibility lookup
+    // missed an already-owned row (e.g. the migration gap above) — recover
+    // by fetching it instead of reporting a hard failure for what is, from
+    // the client's perspective, just a duplicate submission.
+    if (error?.code === "23505") {
+      const { data: raceWinner } = await supabase
+        .from("inspirations")
+        .select("*")
+        .eq("project_id", projectId)
+        .eq("canonical_url", meta.canonicalUrl)
+        .maybeSingle();
+      if (raceWinner) {
+        await ensureInspirationVisible(projectId, raceWinner.id as string);
+        return {
+          status: "duplicate",
+          inspiration: raceWinner as Inspiration,
+          message: `Already saved${raceWinner.title ? `: "${raceWinner.title}"` : "."}`,
+        };
+      }
+    }
     return { status: "failed", inspiration: null, message: "Couldn't save that link." };
   }
+
+  await ensureInspirationVisible(projectId, created.id as string);
 
   if (meta.imageUrls.length > 0) {
     const uploaded = await findAndUploadImage(`inspirations/${created.id}`, meta.imageUrls);

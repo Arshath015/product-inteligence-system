@@ -36,6 +36,11 @@ export function InspirationCard({ item, onOpen }: { item: Inspiration; onOpen: (
         <span className="absolute left-2 top-2 rounded-full border border-border bg-surface/90 px-2 py-0.5 text-[10px] uppercase tracking-wide text-muted">
           {PLATFORM_LABEL[item.platform] ?? item.platform}
         </span>
+        {item.is_owner === false && (
+          <span className="absolute right-2 top-2 rounded-full border border-border bg-surface/90 px-2 py-0.5 text-[10px] text-muted">
+            Shared
+          </span>
+        )}
       </div>
       <div className="flex flex-1 flex-col gap-1 border-t border-border p-3.5">
         <p className="line-clamp-2 font-serif text-[15px] leading-snug text-foreground">

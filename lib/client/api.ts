@@ -23,8 +23,10 @@ export interface ReusePayload {
   sourceProjectId: string;
   allProducts?: boolean;
   allBrands?: boolean;
+  allInspirations?: boolean;
   productIds?: string[];
   brandIds?: string[];
+  inspirationIds?: string[];
 }
 
 export function createProject(payload: { name: string; clientName?: string; description?: string; reuse?: ReusePayload }) {
@@ -55,7 +57,10 @@ export function reuseIntoProject(projectId: string, payload: ReusePayload) {
   }).then((r) => json<{ ok: true }>(r));
 }
 
-export function removeProjectReference(projectId: string, target: { productId?: string; brandId?: string }) {
+export function removeProjectReference(
+  projectId: string,
+  target: { productId?: string; brandId?: string; inspirationId?: string }
+) {
   return fetch(`/api/projects/${projectId}/reuse`, {
     method: "DELETE",
     headers: { "Content-Type": "application/json" },
@@ -96,6 +101,7 @@ export interface ProductQuery {
   category?: string;
   brand?: string;
   sort?: "newest" | "name";
+  limit?: number;
 }
 
 export function fetchProducts(projectId: string, query: ProductQuery = {}) {
@@ -104,6 +110,7 @@ export function fetchProducts(projectId: string, query: ProductQuery = {}) {
   if (query.category) params.set("category", query.category);
   if (query.brand) params.set("brand", query.brand);
   if (query.sort) params.set("sort", query.sort);
+  if (query.limit) params.set("limit", String(query.limit));
   return fetch(`/api/products?${params.toString()}`).then((r) => json<{ products: Product[]; total: number }>(r));
 }
 
@@ -220,6 +227,7 @@ export interface InspirationQuery {
   q?: string;
   platform?: string;
   tag?: string;
+  limit?: number;
 }
 
 export function fetchInspirations(projectId: string, query: InspirationQuery = {}) {
@@ -227,6 +235,7 @@ export function fetchInspirations(projectId: string, query: InspirationQuery = {
   if (query.q) params.set("q", query.q);
   if (query.platform) params.set("platform", query.platform);
   if (query.tag) params.set("tag", query.tag);
+  if (query.limit) params.set("limit", String(query.limit));
   return fetch(`/api/inspirations?${params.toString()}`).then((r) =>
     json<{ inspirations: Inspiration[]; total: number }>(r)
   );

@@ -127,6 +127,23 @@ export async function deleteProject(id: string): Promise<DeleteProjectResult> {
     }
   }
 
+  const { data: ownedInspirations } = await supabase.from("inspirations").select("id").eq("project_id", id);
+  const ownedInspirationIds = (ownedInspirations ?? []).map((i) => i.id as string);
+  if (ownedInspirationIds.length > 0) {
+    const { data: externalRefs } = await supabase
+      .from("project_inspirations")
+      .select("inspiration_id")
+      .in("inspiration_id", ownedInspirationIds)
+      .neq("project_id", id);
+    if (externalRefs && externalRefs.length > 0) {
+      const count = new Set(externalRefs.map((r) => r.inspiration_id)).size;
+      return {
+        status: "blocked",
+        reason: `${count} inspiration(s) owned by this project are still referenced by other projects. Remove those references first.`,
+      };
+    }
+  }
+
   await supabase.from("conversations").delete().eq("project_id", id);
   await supabase.from("memory_items").delete().eq("project_id", id);
   await supabase.from("assistant_memory").delete().eq("project_id", id);
@@ -144,13 +161,15 @@ export interface ReuseSelection {
   sourceProjectId: string;
   productIds?: string[]; // omit/undefined = none; pass explicit ids to select specific ones
   brandIds?: string[];
+  inspirationIds?: string[];
   allProducts?: boolean;
   allBrands?: boolean;
+  allInspirations?: boolean;
 }
 
 /**
- * Links selected products/brands from a source project into the target
- * project's catalogue by inserting reference rows — never copies the
+ * Links selected products/brands/inspirations from a source project into
+ * the target project by inserting reference rows — never copies the
  * underlying record and never touches the source project.
  */
 export async function reuseFromProject(targetProjectId: string, selection: ReuseSelection) {
@@ -169,6 +188,15 @@ export async function reuseFromProject(targetProjectId: string, selection: Reuse
     brandIds = (data ?? []).map((r) => r.brand_id as string);
   }
 
+  let inspirationIds = selection.inspirationIds ?? [];
+  if (selection.allInspirations) {
+    const { data } = await supabase
+      .from("project_inspirations")
+      .select("inspiration_id")
+      .eq("project_id", sourceProjectId);
+    inspirationIds = (data ?? []).map((r) => r.inspiration_id as string);
+  }
+
   if (productIds.length > 0) {
     await supabase
       .from("project_products")
@@ -185,8 +213,16 @@ export async function reuseFromProject(targetProjectId: string, selection: Reuse
         { onConflict: "project_id,brand_id", ignoreDuplicates: true }
       );
   }
+  if (inspirationIds.length > 0) {
+    await supabase
+      .from("project_inspirations")
+      .upsert(
+        inspirationIds.map((inspiration_id) => ({ project_id: targetProjectId, inspiration_id })),
+        { onConflict: "project_id,inspiration_id", ignoreDuplicates: true }
+      );
+  }
 
-  return { productsLinked: productIds.length, brandsLinked: brandIds.length };
+  return { productsLinked: productIds.length, brandsLinked: brandIds.length, inspirationsLinked: inspirationIds.length };
 }
 
 export async function removeProductReference(projectId: string, productId: string) {
@@ -197,4 +233,9 @@ export async function removeProductReference(projectId: string, productId: strin
 export async function removeBrandReference(projectId: string, brandId: string) {
   const supabase = getSupabaseAdmin();
   await supabase.from("project_brands").delete().eq("project_id", projectId).eq("brand_id", brandId);
+}
+
+export async function removeInspirationReference(projectId: string, inspirationId: string) {
+  const supabase = getSupabaseAdmin();
+  await supabase.from("project_inspirations").delete().eq("project_id", projectId).eq("inspiration_id", inspirationId);
 }

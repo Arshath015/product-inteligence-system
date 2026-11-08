@@ -25,8 +25,10 @@ export async function POST(req: NextRequest) {
       sourceProjectId: body.reuse.sourceProjectId,
       allProducts: Boolean(body.reuse.allProducts),
       allBrands: Boolean(body.reuse.allBrands),
+      allInspirations: Boolean(body.reuse.allInspirations),
       productIds: Array.isArray(body.reuse.productIds) ? body.reuse.productIds : undefined,
       brandIds: Array.isArray(body.reuse.brandIds) ? body.reuse.brandIds : undefined,
+      inspirationIds: Array.isArray(body.reuse.inspirationIds) ? body.reuse.inspirationIds : undefined,
     });
   }
 

@@ -7,6 +7,8 @@ import { ChatProvider, useChat } from "@/components/chat/ChatContext";
 import { ChatPanel } from "@/components/chat/ChatPanel";
 import { ProductDetailModal } from "@/components/catalog/ProductDetailModal";
 import { useProject } from "@/components/project/ProjectContext";
+import { ImportFromProjectDialog } from "@/components/project/ImportFromProjectDialog";
+import { CatalogCacheProvider } from "@/components/project/CatalogCacheContext";
 
 const MIN_WIDTH = 320;
 const MAX_WIDTH = 640;
@@ -17,11 +19,12 @@ const COLLAPSED_KEY = "altossa-chat-collapsed";
 function Shell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const { projectId, project } = useProject();
-  const { selectedProduct, closeProduct } = useChat();
+  const { selectedProduct, closeProduct, bumpCatalog } = useChat();
   const [mobileView, setMobileView] = useState<"catalogue" | "chat">("catalogue");
   const [chatWidth, setChatWidth] = useState(DEFAULT_WIDTH);
   const [collapsed, setCollapsed] = useState(false);
   const [hydrated, setHydrated] = useState(false);
+  const [showImport, setShowImport] = useState(false);
   const dragging = useRef(false);
 
   useEffect(() => {
@@ -102,6 +105,13 @@ function Shell({ children }: { children: React.ReactNode }) {
           </nav>
         </div>
         <div className="flex items-center gap-2">
+          <button
+            onClick={() => setShowImport(true)}
+            className="hidden items-center gap-1.5 rounded-full border border-border px-3 py-1.5 text-xs text-muted transition-colors hover:border-accent/50 hover:text-foreground sm:flex"
+            title="Import brands, products, or inspiration from another project"
+          >
+            Import from project
+          </button>
           <Link
             href="/"
             className="hidden items-center gap-1.5 rounded-full border border-border px-3 py-1.5 text-xs text-muted transition-colors hover:border-accent/50 hover:text-foreground sm:flex"
@@ -167,6 +177,13 @@ function Shell({ children }: { children: React.ReactNode }) {
       </div>
 
       {selectedProduct && <ProductDetailModal product={selectedProduct} onClose={closeProduct} />}
+      {showImport && (
+        <ImportFromProjectDialog
+          projectId={projectId}
+          onClose={() => setShowImport(false)}
+          onImported={bumpCatalog}
+        />
+      )}
     </div>
   );
 }
@@ -174,7 +191,9 @@ function Shell({ children }: { children: React.ReactNode }) {
 export function AppShell({ projectId, children }: { projectId: string; children: React.ReactNode }) {
   return (
     <ChatProvider projectId={projectId}>
-      <Shell>{children}</Shell>
+      <CatalogCacheProvider>
+        <Shell>{children}</Shell>
+      </CatalogCacheProvider>
     </ChatProvider>
   );
 }

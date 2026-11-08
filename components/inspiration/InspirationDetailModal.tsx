@@ -48,7 +48,10 @@ export function InspirationDetailModal({
   };
 
   const remove = async () => {
-    if (!confirm("Delete this inspiration? This can't be undone.")) return;
+    const confirmMsg = item.is_owner === false
+      ? `Remove this inspiration from this project? The original stays in its source project.`
+      : "Delete this inspiration? This can't be undone.";
+    if (!confirm(confirmMsg)) return;
     setBusy(true);
     try {
       await deleteInspiration(projectId, item.id);
@@ -82,7 +85,14 @@ export function InspirationDetailModal({
 
         <div className="space-y-4 p-6">
           <div>
-            <p className="text-xs uppercase tracking-wide text-muted">{item.platform}</p>
+            <div className="flex items-center justify-between gap-2">
+              <p className="text-xs uppercase tracking-wide text-muted">{item.platform}</p>
+              {item.is_owner === false && (
+                <span className="rounded-full border border-border px-2 py-0.5 text-[10px] text-muted">
+                  Referenced from another project
+                </span>
+              )}
+            </div>
             <h2 className="font-serif text-2xl text-foreground">{item.title ?? "Untitled inspiration"}</h2>
           </div>
 
@@ -100,23 +110,27 @@ export function InspirationDetailModal({
                   className="flex items-center gap-1 rounded-full border border-border px-2.5 py-1 text-xs text-foreground"
                 >
                   {tag}
-                  <button onClick={() => removeTag(tag)} className="text-muted hover:text-danger">
-                    ✕
-                  </button>
+                  {item.is_owner !== false && (
+                    <button onClick={() => removeTag(tag)} className="text-muted hover:text-danger">
+                      ✕
+                    </button>
+                  )}
                 </span>
               ))}
-              <input
-                value={tagInput}
-                onChange={(e) => setTagInput(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") {
-                    e.preventDefault();
-                    addTag();
-                  }
-                }}
-                placeholder="Add tag…"
-                className="w-24 rounded-full border border-border bg-background px-2.5 py-1 text-xs text-foreground outline-none focus:border-accent"
-              />
+              {item.is_owner !== false && (
+                <input
+                  value={tagInput}
+                  onChange={(e) => setTagInput(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") {
+                      e.preventDefault();
+                      addTag();
+                    }
+                  }}
+                  placeholder="Add tag…"
+                  className="w-24 rounded-full border border-border bg-background px-2.5 py-1 text-xs text-foreground outline-none focus:border-accent"
+                />
+              )}
             </div>
           </div>
 
@@ -135,7 +149,7 @@ export function InspirationDetailModal({
               disabled={busy}
               className="rounded-full border border-danger/40 px-4 py-1.5 text-xs text-danger hover:bg-danger/10"
             >
-              Delete
+              {item.is_owner === false ? "Remove" : "Delete"}
             </button>
           </div>
         </div>

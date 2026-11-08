@@ -22,6 +22,7 @@ export function CreateProjectDialog({
   const [sourceIds, setSourceIds] = useState<string[]>([]);
   const [reuseProducts, setReuseProducts] = useState(true);
   const [reuseBrands, setReuseBrands] = useState(true);
+  const [reuseInspiration, setReuseInspiration] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -44,12 +45,13 @@ export function CreateProjectDialog({
         description: description.trim() || undefined,
       });
 
-      if (reuseEnabled && sourceIds.length > 0 && (reuseProducts || reuseBrands)) {
+      if (reuseEnabled && sourceIds.length > 0 && (reuseProducts || reuseBrands || reuseInspiration)) {
         for (const sourceProjectId of sourceIds) {
           await reuseIntoProject(project.id, {
             sourceProjectId,
             allProducts: reuseProducts,
             allBrands: reuseBrands,
+            allInspirations: reuseInspiration,
           });
         }
       }
@@ -106,8 +108,8 @@ export function CreateProjectDialog({
           {reuseEnabled && (
             <div className="mt-3 space-y-3">
               <p className="text-xs text-muted">
-                Reference brands/products from other projects without copying or modifying them. Removing a
-                reference later never affects the source project.
+                Reference brands/products/inspiration from other projects without copying or modifying them.
+                Removing a reference later never affects the source project.
               </p>
 
               <div className="max-h-40 space-y-1 overflow-y-auto rounded-lg border border-border p-2">
@@ -147,6 +149,15 @@ export function CreateProjectDialog({
                     className="accent-accent"
                   />
                   Products
+                </label>
+                <label className="flex items-center gap-1.5">
+                  <input
+                    type="checkbox"
+                    checked={reuseInspiration}
+                    onChange={(e) => setReuseInspiration(e.target.checked)}
+                    className="accent-accent"
+                  />
+                  Inspiration
                 </label>
               </div>
             </div>

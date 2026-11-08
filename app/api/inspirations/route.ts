@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getSupabaseAdmin } from "@/lib/supabase/server";
 import { saveInspirationUrl } from "@/lib/inspiration";
 import { missingProjectIdResponse } from "@/lib/http";
+import { getVisibleInspirationIds } from "@/lib/inspirationVisibility";
 
 export async function GET(req: NextRequest) {
   const sp = req.nextUrl.searchParams;
@@ -13,10 +14,13 @@ export async function GET(req: NextRequest) {
   const limit = Math.min(Number(sp.get("limit") ?? 60), 120);
 
   const supabase = getSupabaseAdmin();
+  const visibleIds = await getVisibleInspirationIds(projectId);
+  if (visibleIds.length === 0) return NextResponse.json({ inspirations: [], total: 0 });
+
   let query = supabase
     .from("inspirations")
     .select("*", { count: "exact" })
-    .eq("project_id", projectId)
+    .in("id", visibleIds)
     .eq("status", "active");
 
   if (platform) query = query.eq("platform", platform);
@@ -27,7 +31,8 @@ export async function GET(req: NextRequest) {
 
   const { data, count, error } = await query;
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
-  return NextResponse.json({ inspirations: data, total: count ?? 0 });
+  const inspirations = (data ?? []).map((i) => ({ ...i, is_owner: i.project_id === projectId }));
+  return NextResponse.json({ inspirations, total: count ?? 0 });
 }
 
 export async function POST(req: NextRequest) {

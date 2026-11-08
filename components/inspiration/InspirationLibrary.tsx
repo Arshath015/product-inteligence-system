@@ -8,6 +8,7 @@ import { InspirationDetailModal } from "@/components/inspiration/InspirationDeta
 import { AddInspirationDialog } from "@/components/inspiration/AddInspirationDialog";
 import { useChat } from "@/components/chat/ChatContext";
 import { useProject } from "@/components/project/ProjectContext";
+import { useCachedList } from "@/components/project/CatalogCacheContext";
 
 const PLATFORMS = [
   { slug: "", label: "All" },
@@ -21,10 +22,9 @@ const PLATFORMS = [
 export function InspirationLibrary() {
   const { projectId } = useProject();
   const { catalogVersion } = useChat();
-  const [items, setItems] = useState<Inspiration[]>([]);
   const [q, setQ] = useState("");
+  const [qDebounced, setQDebounced] = useState("");
   const [platform, setPlatform] = useState("");
-  const [loading, setLoading] = useState(true);
   const [selected, setSelected] = useState<Inspiration | null>(null);
   const [showAdd, setShowAdd] = useState(false);
   const [version, setVersion] = useState(0);
@@ -32,22 +32,23 @@ export function InspirationLibrary() {
   const refresh = () => setVersion((v) => v + 1);
 
   useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- debounced fetch-on-change needs a loading flag
-    setLoading(true);
-    const handle = setTimeout(() => {
-      fetchInspirations(projectId, { q: q || undefined, platform: platform || undefined })
-        .then((r) => setItems(r.inspirations))
-        .finally(() => setLoading(false));
-    }, 250);
+    const handle = setTimeout(() => setQDebounced(q), 250);
     return () => clearTimeout(handle);
-  }, [projectId, q, platform, version, catalogVersion]);
+  }, [q]);
+
+  const { data: items, loading } = useCachedList(
+    `inspiration:${projectId}:${qDebounced}:${platform}`,
+    () => fetchInspirations(projectId, { q: qDebounced || undefined, platform: platform || undefined }).then((r) => r.inspirations),
+    `${catalogVersion}:${version}`
+  );
+  const list = items ?? [];
 
   return (
     <div className="flex min-h-full flex-col">
       <div className="flex items-center justify-between gap-4 px-6 pt-6">
         <div>
           <h1 className="font-serif text-2xl text-foreground">Inspiration</h1>
-          <p className="text-sm text-muted">{items.length} saved references</p>
+          <p className="text-sm text-muted">{list.length} saved references</p>
         </div>
         <div className="flex items-center gap-2">
           <input
@@ -81,13 +82,13 @@ export function InspirationLibrary() {
         ))}
       </div>
 
-      {loading ? (
+      {loading && !items ? (
         <div className="grid grid-cols-2 gap-4 p-6 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">
           {Array.from({ length: 10 }).map((_, i) => (
             <div key={i} className="h-56 animate-pulse rounded-2xl bg-surface sm:h-64" />
           ))}
         </div>
-      ) : items.length === 0 ? (
+      ) : list.length === 0 ? (
         <div className="flex flex-col items-center justify-center gap-2 py-24 text-center text-muted">
           <p className="font-serif text-lg text-foreground">No inspiration saved yet</p>
           <p className="max-w-sm text-sm">
@@ -96,7 +97,7 @@ export function InspirationLibrary() {
         </div>
       ) : (
         <div className="grid grid-cols-2 gap-4 p-6 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">
-          {items.map((item) => (
+          {list.map((item) => (
             <InspirationCard key={item.id} item={item} onOpen={setSelected} />
           ))}
         </div>

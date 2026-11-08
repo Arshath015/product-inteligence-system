@@ -17,6 +17,10 @@ import {
 } from "@/lib/chat/memory";
 import { getSupabaseAdmin } from "@/lib/supabase/server";
 import { missingProjectIdResponse } from "@/lib/http";
+import { extractAllUrls } from "@/lib/bulk/urlExtract";
+import { processBulkUrls, type BulkUrlResult } from "@/lib/bulk/pipeline";
+import { describeResult, summarizeBulk } from "@/lib/bulk/report";
+import type { Inspiration, Product } from "@/lib/types";
 
 const SYSTEM_PROMPT = `You are ALTOSSA, a luxury interior-design research assistant with direct access to a product catalogue and an Inspiration library.
 
@@ -46,6 +50,20 @@ export async function POST(req: NextRequest) {
   const conversation = await getOrCreateConversation(projectId, body?.conversationId);
   if (!conversation) {
     return new Response(JSON.stringify({ error: "Could not open conversation" }), { status: 500 });
+  }
+
+  await saveMessage(conversation.id as string, "user", message);
+
+  // Two or more URLs in one message go through the dedicated bulk pipeline
+  // instead of the LLM's tool-calling loop — reliable (every URL gets
+  // processed and reported, none silently dropped by a step-count budget),
+  // faster (no per-URL LLM round-trip to decide to call a tool), and skips
+  // building conversation-history/memory context the bulk path never uses.
+  const bulkUrls = extractAllUrls(message);
+  const encoder = new TextEncoder();
+
+  if (bulkUrls.length >= 2) {
+    return handleBulkUrls({ projectId, conversation, bulkUrls, encoder });
   }
 
   const [recent, summary, prefs, memoryItems, lastShownIds] = await Promise.all([
@@ -94,15 +112,12 @@ export async function POST(req: NextRequest) {
   const system = `${SYSTEM_PROMPT}${summaryLine}${prefsLine}${memoryLine}${lastShownLine}`;
   const history = recent.map((m) => ({ role: m.role as "user" | "assistant", content: m.content }));
 
-  await saveMessage(conversation.id as string, "user", message);
-
   const ctx: ToolCtx = {
     projectId,
     shownProducts: [],
     shownInspirations: [],
     conversationId: conversation.id as string,
   };
-  const encoder = new TextEncoder();
 
   const stream = new ReadableStream({
     async start(controller) {
@@ -143,6 +158,84 @@ export async function POST(req: NextRequest) {
         reply: fullText,
         products: ctx.shownProducts.slice(0, 8),
         inspirations: ctx.shownInspirations.slice(0, 8),
+      });
+      controller.close();
+    },
+  });
+
+  return new Response(stream, {
+    headers: {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache, no-transform",
+      Connection: "keep-alive",
+    },
+  });
+}
+
+/**
+ * Handles a message that's mostly/entirely pasted links: runs the bulk
+ * ingestion pipeline directly (no LLM orchestration) and streams the same
+ * meta/delta/done SSE protocol the normal chat path uses, so the frontend
+ * needs no special handling for this case.
+ */
+async function handleBulkUrls({
+  projectId,
+  conversation,
+  bulkUrls,
+  encoder,
+}: {
+  projectId: string;
+  conversation: Awaited<ReturnType<typeof getOrCreateConversation>>;
+  bulkUrls: string[];
+  encoder: TextEncoder;
+}): Promise<Response> {
+  const stream = new ReadableStream({
+    async start(controller) {
+      const send = (event: string, data: unknown) => {
+        controller.enqueue(encoder.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`));
+      };
+      send("meta", { conversationId: conversation?.id });
+
+      let fullText = `Processing ${bulkUrls.length} links…\n\n`;
+      send("delta", { text: fullText });
+
+      const shownProducts: Product[] = [];
+      const shownInspirations: Inspiration[] = [];
+      const pushResult = (r: BulkUrlResult) => {
+        if (r.product) shownProducts.push(r.product);
+        if (r.inspiration) shownInspirations.push(r.inspiration);
+        for (const d of r.discovered ?? []) {
+          if (d.product) shownProducts.push(d.product);
+        }
+      };
+
+      const bulkSummary = await processBulkUrls(projectId, bulkUrls, (r) => {
+        pushResult(r);
+        const lines = [describeResult(r)];
+        for (const d of r.discovered ?? []) lines.push(describeResult(d, "  ↳ "));
+        const text = lines.join("\n") + "\n";
+        fullText += text;
+        send("delta", { text });
+      });
+
+      const summaryText = summarizeBulk(bulkSummary);
+      fullText += `\n${summaryText}`;
+      send("delta", { text: `\n${summaryText}` });
+      fullText = fullText.trim();
+
+      const productIds = shownProducts.map((p) => p.id);
+      const inspirationIds = shownInspirations.map((i) => i.id);
+      await saveMessage(conversation.id as string, "assistant", fullText, productIds, inspirationIds);
+      if (productIds.length > 0) {
+        await updateLastShownProducts(conversation.id as string, productIds);
+      }
+      await maybeSummarizeConversation(projectId, conversation.id as string).catch(() => {});
+
+      send("done", {
+        conversationId: conversation?.id,
+        reply: fullText,
+        products: shownProducts.slice(0, 8),
+        inspirations: shownInspirations.slice(0, 8),
       });
       controller.close();
     },
