@@ -1,7 +1,7 @@
 import { nanoid } from "nanoid";
 import { getSupabaseAdmin } from "@/lib/supabase/server";
 import { extractProductFromUrl } from "@/lib/extraction";
-import { resolveBrand, resolveDesigner, resolveCategory, findDuplicateProduct, ensureProductVisible } from "@/lib/catalog";
+import { resolveBrandDetailed, resolveDesigner, resolveCategory, findDuplicateProduct, ensureProductVisible } from "@/lib/catalog";
 import { storeBestProductImage } from "@/lib/images";
 import { slugify } from "@/lib/slug";
 import { getProductWithRelations, logActivity } from "@/lib/products";
@@ -12,6 +12,8 @@ export interface IngestResult {
   status: "created" | "duplicate_updated" | "duplicate_unchanged" | "failed";
   product: Product | null;
   message: string;
+  /** True only when this call created a brand row that didn't exist before — never set for a matched/existing brand. */
+  brandCreated?: boolean;
 }
 
 // A generic name with no extractable image is a strong signal the URL was a
@@ -83,11 +85,12 @@ export async function ingestProductUrl(
     };
   }
 
-  const [brandId, designerId, categoryId] = await Promise.all([
-    resolveBrand(projectId, extracted.brandName),
+  const [resolvedBrand, designerId, categoryId] = await Promise.all([
+    resolveBrandDetailed(projectId, extracted.brandName),
     resolveDesigner(extracted.designerName),
     resolveCategory(extracted.categoryHint),
   ]);
+  const brandId = resolvedBrand?.id ?? null;
 
   const duplicate = await findDuplicateProduct({
     projectId,
@@ -145,6 +148,7 @@ export async function ingestProductUrl(
     return {
       status: owned && Object.keys(patch).length > 0 ? "duplicate_updated" : "duplicate_unchanged",
       product: updated,
+      brandCreated: resolvedBrand?.created,
       message: owned
         ? Object.keys(patch).length > 0
           ? `Already in the catalogue — filled in missing details for "${existing.name}".`
@@ -193,6 +197,7 @@ export async function ingestProductUrl(
   return {
     status: "created",
     product,
+    brandCreated: resolvedBrand?.created,
     message: `Added "${extracted.name}"${extracted.brandName ? ` by ${extracted.brandName}` : ""} to the catalogue.`,
   };
 }

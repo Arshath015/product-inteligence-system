@@ -55,6 +55,38 @@ const STRUCTURAL_PATH_WORDS = new Set([
   "catalogue", "catalog", "page", "pages", "detail", "details", "index",
 ]);
 
+/**
+ * Last-resort brand fallback: when nothing on the page names a distinct
+ * brand/maker (no JSON-LD brand, no byline, no dataLayer), derive one from
+ * the site's own identity rather than leaving the product with no brand at
+ * all — e.g. a gallery/boutique selling pieces under its own name with no
+ * separate manufacturer, where "no brand found" would otherwise mean every
+ * one of its pieces shows as an orphaned "Unknown brand". Prefers the JSON-LD
+ * Organization name; otherwise looks for a short title segment that names
+ * the site but shares no words with the product's own name — e.g. "Mint –
+ * Poodle Armchair" splits into "Mint" (the site) and "Poodle Armchair" (the
+ * product); "Mint" has no overlap with the product name, so it's the
+ * candidate. Never invents anything: returns null if no such segment exists.
+ */
+function siteIdentityFallback(title: string | null, productName: string, orgNames: string[]): string | null {
+  const fromOrg = orgNames.find((n) => n.trim().length > 0 && n.trim().length <= 60);
+  if (fromOrg) return fromOrg.trim();
+
+  if (!title) return null;
+  const segments = title
+    .split(/[|\-–—:]/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+  if (segments.length < 2) return null;
+  const productTokens = new Set(tokensFrom(productName));
+  const candidate = segments.find((seg) => {
+    const segTokens = tokensFrom(seg);
+    if (segTokens.length === 0 || segTokens.length > 4) return false;
+    return segTokens.every((t) => !productTokens.has(t));
+  });
+  return candidate ?? null;
+}
+
 /** Tokens likely to identify THIS product: from the page title and URL path segments. */
 function buildNameHints(title: string | null, url: string): string[] {
   const hints = new Set<string>();
@@ -318,10 +350,12 @@ export async function extractProductFromUrl(
       // Some sites' JSON-LD also literally sets brand to the retailer's own
       // name (a seller/brand mixup in their schema), so apply the same
       // site-owner guard here as the model path does below.
-      const jsonLdBrandIsSiteOwner = fromJsonLd.brandName
-        ? looksLikeSiteOwner(fromJsonLd.brandName, host, extractOrgNames(signals.jsonLd))
-        : false;
-      const brandName = (jsonLdBrandIsSiteOwner ? null : fromJsonLd.brandName) ?? signals.byline.brandName;
+      const orgNames = extractOrgNames(signals.jsonLd);
+      const jsonLdBrandIsSiteOwner = fromJsonLd.brandName ? looksLikeSiteOwner(fromJsonLd.brandName, host, orgNames) : false;
+      const brandName =
+        (jsonLdBrandIsSiteOwner ? null : fromJsonLd.brandName) ??
+        signals.byline.brandName ??
+        siteIdentityFallback(signals.title, fromJsonLd.name, orgNames);
       const designerName = signals.byline.designerName;
       const nameHints = buildNameHints(signals.title, finalUrl);
       const hints = Array.from(new Set([...nameHints, ...tokensFrom(fromJsonLd.name)]));
@@ -387,7 +421,10 @@ export async function extractProductFromUrl(
   // product-specific brand is stated anywhere — never trust that guess.
   const orgNames = signals ? extractOrgNames(signals.jsonLd) : [];
   const modelBrandIsSiteOwner = object.brandName ? looksLikeSiteOwner(object.brandName, host, orgNames) : false;
-  const brandName = (modelBrandIsSiteOwner ? null : object.brandName) ?? signals?.byline.brandName ?? null;
+  const brandName =
+    (modelBrandIsSiteOwner ? null : object.brandName) ??
+    signals?.byline.brandName ??
+    siteIdentityFallback(signals?.title ?? null, object.name, orgNames);
   const designerName = object.designerName ?? signals?.byline.designerName ?? null;
 
   // Re-score with the model's resolved name/brand now that we have them —

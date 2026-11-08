@@ -18,7 +18,8 @@ import {
 import { getSupabaseAdmin } from "@/lib/supabase/server";
 import { missingProjectIdResponse } from "@/lib/http";
 import { extractAllUrls } from "@/lib/bulk/urlExtract";
-import { processBulkUrls, type BulkUrlResult } from "@/lib/bulk/pipeline";
+import { processBulkUrls } from "@/lib/bulk/pipeline";
+import { reconcileBulkSummary } from "@/lib/bulk/reconcile";
 import { describeResult, getFailedUrls, summarizeBulk, uiStatus } from "@/lib/bulk/report";
 import type { Inspiration, Product } from "@/lib/types";
 
@@ -197,21 +198,10 @@ async function handleBulkUrls({
       send("meta", { conversationId: conversation?.id });
       send("bulk_start", { total: bulkUrls.length });
 
-      const shownProducts: Product[] = [];
-      const shownInspirations: Inspiration[] = [];
-      const pushResult = (r: BulkUrlResult) => {
-        if (r.product) shownProducts.push(r.product);
-        if (r.inspiration) shownInspirations.push(r.inspiration);
-        for (const d of r.discovered ?? []) {
-          if (d.product) shownProducts.push(d.product);
-        }
-      };
-
-      const bulkSummary = await processBulkUrls(
+      const bulkSummaryRaw = await processBulkUrls(
         projectId,
         bulkUrls,
         (r) => {
-          pushResult(r);
           send("bulk_progress", { text: describeResult(r), status: uiStatus(r.status) });
           for (const d of r.discovered ?? []) {
             send("bulk_progress", { text: describeResult(d, "  ↳ "), status: uiStatus(d.status) });
@@ -221,6 +211,23 @@ async function handleBulkUrls({
           send("bulk_progress", { text, status: "pending" });
         }
       );
+
+      // Verify every claimed write against the database before telling the
+      // user anything was saved — the response must describe what's
+      // actually persisted, not just what each step believed it did.
+      const bulkSummary = await reconcileBulkSummary(projectId, bulkSummaryRaw);
+
+      const shownProducts: Product[] = [];
+      const shownInspirations: Inspiration[] = [];
+      for (const r of bulkSummary.results) {
+        if (r.status === "product_created" && r.product) shownProducts.push(r.product);
+        if ((r.status === "manufacturer_saved" || r.status === "inspiration_saved") && r.inspiration) {
+          shownInspirations.push(r.inspiration);
+        }
+        for (const d of r.discovered ?? []) {
+          if (d.status === "product_created" && d.product) shownProducts.push(d.product);
+        }
+      }
 
       const summaryText = summarizeBulk(bulkSummary);
       const failedUrls = getFailedUrls(bulkSummary);
