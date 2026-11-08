@@ -91,68 +91,80 @@ export interface DeleteProjectResult {
 export async function deleteProject(id: string): Promise<DeleteProjectResult> {
   const supabase = getSupabaseAdmin();
 
-  const { data: ownedProducts } = await supabase.from("products").select("id").eq("project_id", id);
-  const { data: ownedBrands } = await supabase.from("brands").select("id").eq("project_id", id);
+  const [{ data: ownedProducts }, { data: ownedBrands }, { data: ownedInspirationsEarly }] = await Promise.all([
+    supabase.from("products").select("id").eq("project_id", id),
+    supabase.from("brands").select("id").eq("project_id", id),
+    supabase.from("inspirations").select("id").eq("project_id", id),
+  ]);
 
   const ownedProductIds = (ownedProducts ?? []).map((p) => p.id as string);
   const ownedBrandIds = (ownedBrands ?? []).map((b) => b.id as string);
+  const ownedInspirationIds = (ownedInspirationsEarly ?? []).map((i) => i.id as string);
 
-  if (ownedProductIds.length > 0) {
-    const { data: externalRefs } = await supabase
-      .from("project_products")
-      .select("product_id")
-      .in("product_id", ownedProductIds)
-      .neq("project_id", id);
-    if (externalRefs && externalRefs.length > 0) {
-      const count = new Set(externalRefs.map((r) => r.product_id)).size;
-      return {
-        status: "blocked",
-        reason: `${count} product(s) owned by this project are still referenced by other projects. Remove those references first.`,
-      };
-    }
+  const [productRefs, brandRefs, inspirationRefs] = await Promise.all([
+    ownedProductIds.length > 0
+      ? supabase.from("project_products").select("product_id").in("product_id", ownedProductIds).neq("project_id", id)
+      : Promise.resolve({ data: [] as { product_id: string }[] }),
+    ownedBrandIds.length > 0
+      ? supabase.from("project_brands").select("brand_id").in("brand_id", ownedBrandIds).neq("project_id", id)
+      : Promise.resolve({ data: [] as { brand_id: string }[] }),
+    ownedInspirationIds.length > 0
+      ? supabase
+          .from("project_inspirations")
+          .select("inspiration_id")
+          .in("inspiration_id", ownedInspirationIds)
+          .neq("project_id", id)
+      : Promise.resolve({ data: [] as { inspiration_id: string }[] }),
+  ]);
+
+  if (productRefs.data && productRefs.data.length > 0) {
+    const count = new Set(productRefs.data.map((r) => r.product_id)).size;
+    return {
+      status: "blocked",
+      reason: `${count} product(s) owned by this project are still referenced by other projects. Remove those references first.`,
+    };
+  }
+  if (brandRefs.data && brandRefs.data.length > 0) {
+    const count = new Set(brandRefs.data.map((r) => r.brand_id)).size;
+    return {
+      status: "blocked",
+      reason: `${count} brand(s) owned by this project are still referenced by other projects. Remove those references first.`,
+    };
+  }
+  if (inspirationRefs.data && inspirationRefs.data.length > 0) {
+    const count = new Set(inspirationRefs.data.map((r) => r.inspiration_id)).size;
+    return {
+      status: "blocked",
+      reason: `${count} inspiration(s) owned by this project are still referenced by other projects. Remove those references first.`,
+    };
   }
 
-  if (ownedBrandIds.length > 0) {
-    const { data: externalRefs } = await supabase
-      .from("project_brands")
-      .select("brand_id")
-      .in("brand_id", ownedBrandIds)
-      .neq("project_id", id);
-    if (externalRefs && externalRefs.length > 0) {
-      const count = new Set(externalRefs.map((r) => r.brand_id)).size;
-      return {
-        status: "blocked",
-        reason: `${count} brand(s) owned by this project are still referenced by other projects. Remove those references first.`,
-      };
-    }
-  }
+  // These six are independent of each other — run them concurrently instead
+  // of one-by-one so a project with a lot of history doesn't take many
+  // sequential round-trips (and feel like the delete silently did nothing)
+  // before the row actually disappears.
+  const cascadeResults = await Promise.all([
+    supabase.from("conversations").delete().eq("project_id", id),
+    supabase.from("memory_items").delete().eq("project_id", id),
+    supabase.from("assistant_memory").delete().eq("project_id", id),
+    supabase.from("inspirations").delete().eq("project_id", id),
+    supabase.from("research_jobs").delete().eq("project_id", id),
+    supabase.from("pending_discoveries").delete().eq("project_id", id),
+  ]);
+  const cascadeError = cascadeResults.find((r) => r.error)?.error;
+  if (cascadeError) throw new Error(cascadeError.message);
 
-  const { data: ownedInspirations } = await supabase.from("inspirations").select("id").eq("project_id", id);
-  const ownedInspirationIds = (ownedInspirations ?? []).map((i) => i.id as string);
-  if (ownedInspirationIds.length > 0) {
-    const { data: externalRefs } = await supabase
-      .from("project_inspirations")
-      .select("inspiration_id")
-      .in("inspiration_id", ownedInspirationIds)
-      .neq("project_id", id);
-    if (externalRefs && externalRefs.length > 0) {
-      const count = new Set(externalRefs.map((r) => r.inspiration_id)).size;
-      return {
-        status: "blocked",
-        reason: `${count} inspiration(s) owned by this project are still referenced by other projects. Remove those references first.`,
-      };
-    }
-  }
+  const ownedDeleteResults = await Promise.all([
+    ownedProductIds.length > 0
+      ? supabase.from("products").delete().eq("project_id", id)
+      : Promise.resolve({ error: null }),
+    ownedBrandIds.length > 0 ? supabase.from("brands").delete().eq("project_id", id) : Promise.resolve({ error: null }),
+  ]);
+  const ownedDeleteError = ownedDeleteResults.find((r) => r.error)?.error;
+  if (ownedDeleteError) throw new Error(ownedDeleteError.message);
 
-  await supabase.from("conversations").delete().eq("project_id", id);
-  await supabase.from("memory_items").delete().eq("project_id", id);
-  await supabase.from("assistant_memory").delete().eq("project_id", id);
-  await supabase.from("inspirations").delete().eq("project_id", id);
-  await supabase.from("research_jobs").delete().eq("project_id", id);
-  await supabase.from("pending_discoveries").delete().eq("project_id", id);
-  if (ownedProductIds.length > 0) await supabase.from("products").delete().eq("project_id", id);
-  if (ownedBrandIds.length > 0) await supabase.from("brands").delete().eq("project_id", id);
-  await supabase.from("projects").delete().eq("id", id);
+  const { error: projectError } = await supabase.from("projects").delete().eq("id", id);
+  if (projectError) throw new Error(projectError.message);
 
   return { status: "deleted" };
 }

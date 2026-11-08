@@ -29,6 +29,7 @@ export function ProjectSelectionScreen() {
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const [busyId, setBusyId] = useState<string | null>(null);
 
   const refresh = async () => {
     setLoading(true);
@@ -59,25 +60,38 @@ export function ProjectSelectionScreen() {
 
   const archive = async (id: string) => {
     setMenuOpenId(null);
-    await updateProject(id, { status: "archived" });
-    refresh();
+    setBusyId(id);
+    try {
+      await updateProject(id, { status: "archived" });
+      await refresh();
+    } finally {
+      setBusyId(null);
+    }
   };
 
   const unarchive = async (id: string) => {
     setMenuOpenId(null);
-    await updateProject(id, { status: "active" });
-    refresh();
+    setBusyId(id);
+    try {
+      await updateProject(id, { status: "active" });
+      await refresh();
+    } finally {
+      setBusyId(null);
+    }
   };
 
   const remove = async (project: Project) => {
     setMenuOpenId(null);
     if (!confirm(`Permanently delete "${project.name}"? This can't be undone.`)) return;
     setError(null);
+    setBusyId(project.id);
     try {
       await deleteProject(project.id);
-      refresh();
+      await refresh();
     } catch (err) {
       setError((err as Error).message);
+    } finally {
+      setBusyId(null);
     }
   };
 
@@ -134,8 +148,17 @@ export function ProjectSelectionScreen() {
             {projects.map((p) => (
               <div
                 key={p.id}
-                className="group relative flex flex-col gap-3 rounded-2xl border border-border bg-surface p-5 transition-colors hover:border-accent/40"
+                className={`group relative flex flex-col gap-3 rounded-2xl border border-border bg-surface p-5 transition-colors hover:border-accent/40 ${
+                  busyId === p.id ? "pointer-events-none opacity-50" : ""
+                }`}
               >
+                {busyId === p.id && (
+                  <div className="absolute right-4 top-4 flex items-center gap-1.5 text-[11px] text-muted">
+                    <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-muted [animation-delay:-0.2s]" />
+                    <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-muted [animation-delay:-0.1s]" />
+                    <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-muted" />
+                  </div>
+                )}
                 <div className="flex items-start justify-between gap-2">
                   {renamingId === p.id ? (
                     <input
