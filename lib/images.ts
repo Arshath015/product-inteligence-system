@@ -34,19 +34,25 @@ async function tryDownload(url: string): Promise<{ bytes: Buffer; contentType: s
 
 const MAX_VISION_CHECKS = 4;
 
+export interface UploadedImage {
+  storagePath: string;
+  publicUrl: string;
+  originalUrl: string;
+}
+
 /**
  * Tries each candidate image URL in order (best source first), downloads
- * the bytes server-side, and persists the first one that succeeds in
- * Supabase Storage. Never substitutes an unrelated image — if every
- * candidate fails (or fails a vision sanity-check, when requested), it
- * records a "missing" row instead.
+ * the bytes server-side, and uploads the first one that succeeds to
+ * Supabase Storage under `${pathPrefix}/<random>.<ext>`. Never substitutes
+ * an unrelated image — returns null if every candidate fails (or fails a
+ * vision sanity-check, when requested) so the caller can record a "missing"
+ * status instead of silently picking something unrelated.
  */
-export async function storeBestProductImage(
-  productId: string,
+export async function findAndUploadImage(
+  pathPrefix: string,
   candidateUrls: string[],
-  isPrimary: boolean,
   opts: { validateWithVision?: boolean } = {}
-) {
+): Promise<UploadedImage | null> {
   const supabase = getSupabaseAdmin();
   let visionChecks = 0;
 
@@ -61,7 +67,7 @@ export async function storeBestProductImage(
     }
 
     const ext = extFromContentType(downloaded.contentType);
-    const path = `${productId}/${nanoid()}.${ext}`;
+    const path = `${pathPrefix}/${nanoid()}.${ext}`;
 
     const { error: uploadError } = await supabase.storage
       .from(config.storage.bucket)
@@ -72,31 +78,45 @@ export async function storeBestProductImage(
     if (uploadError) continue;
 
     const { data: pub } = supabase.storage.from(config.storage.bucket).getPublicUrl(path);
-
-    const { data: row, error } = await supabase
-      .from("product_images")
-      .insert({
-        product_id: productId,
-        original_url: url,
-        storage_path: path,
-        public_url: pub.publicUrl,
-        is_primary: isPrimary,
-        status: "stored",
-      })
-      .select()
-      .single();
-
-    if (!error) return row;
+    return { storagePath: path, publicUrl: pub.publicUrl, originalUrl: url };
   }
+
+  return null;
+}
+
+/**
+ * Tries each candidate image URL in order and persists the first one that
+ * succeeds as a `product_images` row. Records a "missing" row if every
+ * candidate fails.
+ */
+export async function storeBestProductImage(
+  productId: string,
+  candidateUrls: string[],
+  isPrimary: boolean,
+  opts: { validateWithVision?: boolean } = {}
+) {
+  const supabase = getSupabaseAdmin();
+  const uploaded = await findAndUploadImage(productId, candidateUrls, opts);
 
   const { data: row } = await supabase
     .from("product_images")
-    .insert({
-      product_id: productId,
-      original_url: candidateUrls[0] ?? null,
-      is_primary: isPrimary,
-      status: "missing",
-    })
+    .insert(
+      uploaded
+        ? {
+            product_id: productId,
+            original_url: uploaded.originalUrl,
+            storage_path: uploaded.storagePath,
+            public_url: uploaded.publicUrl,
+            is_primary: isPrimary,
+            status: "stored",
+          }
+        : {
+            product_id: productId,
+            original_url: candidateUrls[0] ?? null,
+            is_primary: isPrimary,
+            status: "missing",
+          }
+    )
     .select()
     .single();
 

@@ -1,0 +1,40 @@
+import { NextRequest, NextResponse } from "next/server";
+import { getSupabaseAdmin } from "@/lib/supabase/server";
+import { saveInspirationUrl } from "@/lib/inspiration";
+
+export async function GET(req: NextRequest) {
+  const sp = req.nextUrl.searchParams;
+  const q = sp.get("q")?.trim();
+  const platform = sp.get("platform")?.trim();
+  const tag = sp.get("tag")?.trim();
+  const limit = Math.min(Number(sp.get("limit") ?? 60), 120);
+
+  const supabase = getSupabaseAdmin();
+  let query = supabase.from("inspirations").select("*", { count: "exact" }).eq("status", "active");
+
+  if (platform) query = query.eq("platform", platform);
+  if (tag) query = query.contains("tags", [tag]);
+  if (q) query = query.or(`title.ilike.%${q}%,description.ilike.%${q}%,caption.ilike.%${q}%`);
+
+  query = query.order("created_at", { ascending: false }).limit(limit);
+
+  const { data, count, error } = await query;
+  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+  return NextResponse.json({ inspirations: data, total: count ?? 0 });
+}
+
+export async function POST(req: NextRequest) {
+  const body = await req.json().catch(() => null);
+  const url = body?.url;
+  if (!url || typeof url !== "string") {
+    return NextResponse.json({ error: "Missing url" }, { status: 400 });
+  }
+  try {
+    new URL(url);
+  } catch {
+    return NextResponse.json({ error: "Invalid url" }, { status: 400 });
+  }
+
+  const result = await saveInspirationUrl(url);
+  return NextResponse.json(result);
+}

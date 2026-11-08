@@ -3,11 +3,16 @@ import { z } from "zod";
 import { getSupabaseAdmin } from "@/lib/supabase/server";
 import { listProducts } from "@/lib/products";
 import { ingestProductUrl } from "@/lib/ingest";
+import { saveInspirationUrl } from "@/lib/inspiration";
+import { classifyUrl } from "@/lib/linkRouter";
 import { tavilySearch } from "@/lib/tavily";
-import type { Product } from "@/lib/types";
+import { searchMemory } from "@/lib/chat/memory";
+import type { Inspiration, Product } from "@/lib/types";
 
 export interface ToolCtx {
   shownProducts: Product[];
+  shownInspirations: Inspiration[];
+  conversationId: string;
 }
 
 function primaryImageUrl(p: Product): string | null {
@@ -15,7 +20,7 @@ function primaryImageUrl(p: Product): string | null {
   return img?.status === "stored" ? img.public_url ?? null : null;
 }
 
-function summarize(p: Product) {
+function summarizeProduct(p: Product) {
   return {
     id: p.id,
     name: p.name,
@@ -26,11 +31,25 @@ function summarize(p: Product) {
   };
 }
 
+function summarizeInspiration(i: Inspiration) {
+  return {
+    id: i.id,
+    title: i.title,
+    platform: i.platform,
+    hasImage: i.image_status === "stored",
+    sourceUrl: i.source_url,
+  };
+}
+
 function pushShown(ctx: ToolCtx, products: Product[]) {
   for (const p of products) {
-    if (!ctx.shownProducts.find((existing) => existing.id === p.id)) {
-      ctx.shownProducts.push(p);
-    }
+    if (!ctx.shownProducts.find((existing) => existing.id === p.id)) ctx.shownProducts.push(p);
+  }
+}
+
+function pushShownInspiration(ctx: ToolCtx, items: Inspiration[]) {
+  for (const i of items) {
+    if (!ctx.shownInspirations.find((existing) => existing.id === i.id)) ctx.shownInspirations.push(i);
   }
 }
 
@@ -58,21 +77,50 @@ export function buildChatTools(ctx: ToolCtx) {
           limit,
         });
         pushShown(ctx, products);
-        return { total, results: products.map(summarize) };
+        return { total, results: products.map(summarizeProduct) };
       },
     }),
 
-    ingest_url: tool({
+    save_link: tool({
       description:
-        "Fetch a product page URL, extract its details and image, check for duplicates, and save it to the catalogue (or enrich the existing record if it's already there). Use this whenever the user pastes a product URL.",
-      inputSchema: z.object({ url: z.string().describe("The product page URL") }),
+        "Handles ANY URL the client pastes — a product page, a Pinterest pin/board, an Instagram post/reel, or a brand site. Automatically detects the link type and routes it correctly: product pages go to the catalogue, Pinterest/Instagram links go to the Inspiration library. Use this for every URL — don't try to guess the platform yourself.",
+      inputSchema: z.object({ url: z.string().describe("The URL the client shared") }),
       execute: async ({ url }) => {
+        const linkType = classifyUrl(url);
+
+        if (linkType === "pinterest" || linkType === "instagram") {
+          const result = await saveInspirationUrl(url, linkType);
+          if (result.inspiration) pushShownInspiration(ctx, [result.inspiration]);
+          return {
+            linkType,
+            status: result.status,
+            message: result.message,
+            inspiration: result.inspiration ? summarizeInspiration(result.inspiration) : null,
+          };
+        }
+
         const result = await ingestProductUrl(url);
         if (result.product) pushShown(ctx, [result.product]);
         return {
+          linkType: "product",
           status: result.status,
           message: result.message,
-          product: result.product ? summarize(result.product) : null,
+          product: result.product ? summarizeProduct(result.product) : null,
+        };
+      },
+    }),
+
+    save_inspiration_explicit: tool({
+      description:
+        "Save a URL to the Inspiration library specifically (not the product catalogue), even if it's a manufacturer/brand link. Use only when the client explicitly asks to save something as inspiration rather than as a catalogue product.",
+      inputSchema: z.object({ url: z.string() }),
+      execute: async ({ url }) => {
+        const result = await saveInspirationUrl(url);
+        if (result.inspiration) pushShownInspiration(ctx, [result.inspiration]);
+        return {
+          status: result.status,
+          message: result.message,
+          inspiration: result.inspiration ? summarizeInspiration(result.inspiration) : null,
         };
       },
     }),
@@ -120,6 +168,16 @@ export function buildChatTools(ctx: ToolCtx) {
           .from("assistant_memory")
           .upsert({ key, value, updated_at: new Date().toISOString() }, { onConflict: "key" });
         return { ok: true };
+      },
+    }),
+
+    recall_memory: tool({
+      description:
+        "Search earlier conversations and saved long-term facts for something relevant to what the client is asking now — e.g. a brand or preference they mentioned in a previous session. Only use when the current conversation's own context doesn't already answer it.",
+      inputSchema: z.object({ query: z.string() }),
+      execute: async ({ query }) => {
+        const result = await searchMemory(query, ctx.conversationId);
+        return result;
       },
     }),
   };

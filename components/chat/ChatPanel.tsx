@@ -3,12 +3,14 @@
 import { useEffect, useRef, useState } from "react";
 import { useChat } from "@/components/chat/ChatContext";
 import { MessageBubble } from "@/components/chat/MessageBubble";
+import { ConversationList } from "@/components/chat/ConversationList";
 import { analyzeImage } from "@/lib/client/api";
 
 export function ChatPanel() {
-  const { messages, sending, sendMessage, openProduct } = useChat();
+  const { messages, sending, sendMessage, openProduct, newChat } = useChat();
   const [input, setInput] = useState("");
   const [analyzing, setAnalyzing] = useState(false);
+  const [showHistory, setShowHistory] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
 
@@ -42,11 +44,31 @@ export function ChatPanel() {
   };
 
   return (
-    <div className="flex h-full min-w-0 flex-col overflow-hidden">
-      <div className="border-b border-border px-5 py-4">
-        <p className="font-serif text-lg tracking-tight">ALTOSSA</p>
-        <p className="text-xs text-muted">Luxury design research assistant</p>
+    <div className="relative flex h-full min-w-0 flex-col overflow-hidden">
+      <div className="flex items-center justify-between border-b border-border px-5 py-4">
+        <div>
+          <p className="font-serif text-lg tracking-tight text-foreground">ALTOSSA</p>
+          <p className="text-xs text-muted">Luxury design research assistant</p>
+        </div>
+        <div className="flex items-center gap-1.5">
+          <button
+            onClick={newChat}
+            title="New chat"
+            className="flex h-8 w-8 items-center justify-center rounded-full border border-border text-muted transition-colors hover:border-accent/50 hover:text-foreground"
+          >
+            +
+          </button>
+          <button
+            onClick={() => setShowHistory(true)}
+            title="Conversation history"
+            className="flex h-8 w-8 items-center justify-center rounded-full border border-border text-muted transition-colors hover:border-accent/50 hover:text-foreground"
+          >
+            ☰
+          </button>
+        </div>
       </div>
+
+      {showHistory && <ConversationList onClose={() => setShowHistory(false)} />}
 
       <div ref={scrollRef} className="min-w-0 flex-1 space-y-4 overflow-x-hidden overflow-y-auto px-4 py-4">
         {messages.length === 0 && (

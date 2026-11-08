@@ -2,6 +2,7 @@
 
 import type { ChatMessageVM } from "@/components/chat/ChatContext";
 import { ChatProductCard } from "@/components/chat/ChatProductCard";
+import { InspirationChatCard } from "@/components/chat/InspirationChatCard";
 import { LinkifiedText } from "@/components/chat/LinkifiedText";
 import type { Product } from "@/lib/types";
 
@@ -36,10 +37,13 @@ export function MessageBubble({
         >
           <LinkifiedText text={message.content} isUser={isUser} />
         </div>
-        {message.products && message.products.length > 0 && (
+        {Boolean(message.products?.length || message.inspirations?.length) && (
           <div className="flex min-w-0 flex-col gap-2">
-            {message.products.map((p) => (
+            {message.products?.map((p) => (
               <ChatProductCard key={p.id} product={p} onOpen={onOpenProduct} />
+            ))}
+            {message.inspirations?.map((i) => (
+              <InspirationChatCard key={i.id} item={i} />
             ))}
           </div>
         )}

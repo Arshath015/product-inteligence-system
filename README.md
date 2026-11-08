@@ -31,19 +31,50 @@ catalogue automatically — images included.
 - `lib/ingest.ts` — the full "paste a URL" pipeline: extract → resolve →
   dedupe → create or enrich → store image. Idempotent, so retries (e.g. from
   a Groq key rotation mid-chat) are safe.
-- `lib/chat/` — conversation memory (rolling summary once a conversation
-  passes ~24 messages, so raw history sent to the model stays bounded) and
-  the tool definitions (`search_catalog`, `ingest_url`, `web_research`,
-  `list_brands`, `remember_preference`) used by `generateText`'s built-in
-  multi-step tool loop in `app/api/chat/route.ts`.
-- `app/api/*` — REST-ish routes for products/brands/categories CRUD, URL
-  ingestion, chat, and image/vision analysis. All DB access goes through
-  these server routes using the Supabase **service role** key — nothing
-  talks to Supabase directly from the browser.
+- `lib/chat/memory.ts` — multi-conversation support (list/create/rename/
+  archive/delete, auto-titled from the first message), rolling per-conversation
+  summaries (tracked via `summarized_through_message_id` so each summarization
+  pass only processes genuinely new messages), long-term memory extraction
+  (durable client-preference facts pulled out of each summarized chunk into
+  `memory_items`), and `searchMemory()` for cross-conversation retrieval
+  (`pg_trgm` similarity over past summaries + memory facts).
+- `lib/chat/tools.ts` — tool definitions used by the chat loop:
+  `search_catalog`, `save_link` (auto-routes any URL to the product catalogue
+  or the Inspiration library by platform), `save_inspiration_explicit`,
+  `web_research`, `list_brands`, `remember_preference`, `recall_memory`.
+- `lib/linkRouter.ts` — deterministic (non-LLM) URL classification into
+  product/Pinterest/Instagram. Chosen over asking the model to guess, and
+  over adopting LangChain/LangGraph for the overall workflow — the existing
+  AI SDK tool-calling loop already implements the same
+  understand→retrieve-context→retrieve-memory→search→research→save→respond
+  pipeline the brief describes, so a second orchestration framework would
+  only duplicate the Groq key-rotation wrapper and tool definitions.
+- `lib/inspiration.ts` / `lib/inspirationExtraction.ts` — Pinterest/Instagram
+  save pipeline: reads only publicly server-rendered Open Graph metadata
+  (never logs in or bypasses access controls), falls back to Tavily, and
+  ultimately to just the bare URL if a platform blocks extraction. Deduped
+  by canonical URL, same as products.
+- `app/api/chat/route.ts` — streams responses over SSE (`text/event-stream`,
+  hand-rolled `meta`/`delta`/`done` frames, parsed client-side since
+  `EventSource` doesn't support POST). Groq key rotation guards the
+  *connection*: if starting the stream fails (bad/rate-limited key), it
+  retries with another key before any text reaches the client; a failure
+  after streaming has started just ends the response, rather than retrying
+  into a second overlapping generation.
+- `app/api/*` — REST-ish routes for products/brands/categories/conversations/
+  inspirations CRUD, URL ingestion, chat, and image/vision analysis. All DB
+  access goes through these server routes using the Supabase **service
+  role** key — nothing talks to Supabase directly from the browser.
 - `components/catalog/*` — the visual catalogue (grid, filters, detail
   modal, add dialog, brand directory).
-- `components/chat/*` — the persistent chat panel, shared across routes via
-  a context provider in `components/layout/AppShell.tsx` (mirrors a
+- `components/inspiration/*` — the Inspiration library (separate from the
+  product catalogue — a saved Pinterest/Instagram reference is never
+  auto-promoted to a catalogue product).
+- `components/chat/*` — the persistent, resizable/collapsible chat panel
+  (drag handle + collapse toggle in `components/layout/AppShell.tsx`, width
+  and collapsed state in `localStorage`), with a conversation-history
+  overlay (`ConversationList.tsx`) for New Chat / search / rename / archive
+  / delete. Shared across routes via a context provider (mirrors a
   Claude-Projects-style chat + artifact split: chat on the left, catalogue
   on the right).
 
@@ -71,6 +102,7 @@ Copy `.env.example` to `.env.local` and fill in real values. **Never commit
    - `supabase/migrations/0001_init.sql`
    - `supabase/migrations/0002_storage.sql`
    - `supabase/migrations/0003_functions.sql`
+   - `supabase/migrations/0004_conversations_memory_inspiration.sql`
 4. That's it — no manual table/bucket creation needed in the dashboard UI.
 
 ## Local development

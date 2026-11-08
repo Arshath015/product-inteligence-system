@@ -75,11 +75,40 @@ export interface ExtractedProductData {
   sourceDomain: string | null;
 }
 
+export interface Inspiration {
+  id: string;
+  platform: "pinterest" | "instagram" | "manufacturer" | "brand" | "other";
+  source_url: string;
+  canonical_url: string | null;
+  title: string | null;
+  description: string | null;
+  caption: string | null;
+  image_original_url: string | null;
+  image_storage_path: string | null;
+  image_public_url: string | null;
+  image_status: "pending" | "stored" | "failed" | "missing";
+  tags: string[];
+  related_brand_id: string | null;
+  related_product_id: string | null;
+  status: "active" | "archived";
+  created_at: string;
+}
+
+export interface Conversation {
+  id: string;
+  title: string | null;
+  status: "active" | "archived";
+  last_shown_product_ids: string[];
+  created_at: string;
+  updated_at: string;
+}
+
 export interface ChatMessage {
   id: string;
   conversation_id: string;
   role: "user" | "assistant" | "system" | "tool";
   content: string;
   referenced_product_ids: string[];
+  referenced_inspiration_ids: string[];
   created_at: string;
 }
