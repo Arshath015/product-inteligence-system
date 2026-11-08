@@ -236,6 +236,7 @@ export function analyzeImage(imageDataUrl: string, question?: string) {
 export interface InspirationQuery {
   q?: string;
   platform?: string;
+  excludePlatform?: string;
   tag?: string;
   limit?: number;
 }
@@ -244,6 +245,7 @@ export function fetchInspirations(projectId: string, query: InspirationQuery = {
   const params = new URLSearchParams({ projectId });
   if (query.q) params.set("q", query.q);
   if (query.platform) params.set("platform", query.platform);
+  if (query.excludePlatform) params.set("excludePlatform", query.excludePlatform);
   if (query.tag) params.set("tag", query.tag);
   if (query.limit) params.set("limit", String(query.limit));
   return fetch(`/api/inspirations?${params.toString()}`).then((r) =>

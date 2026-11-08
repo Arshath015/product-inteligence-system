@@ -14,8 +14,6 @@ const PLATFORMS = [
   { slug: "", label: "All" },
   { slug: "pinterest", label: "Pinterest" },
   { slug: "instagram", label: "Instagram" },
-  { slug: "manufacturer", label: "Manufacturer" },
-  { slug: "brand", label: "Brand" },
   { slug: "other", label: "Other" },
 ];
 
@@ -38,7 +36,12 @@ export function InspirationLibrary() {
 
   const { data: items, loading } = useCachedList(
     `inspiration:${projectId}:${qDebounced}:${platform}`,
-    () => fetchInspirations(projectId, { q: qDebounced || undefined, platform: platform || undefined }).then((r) => r.inspirations),
+    () =>
+      fetchInspirations(projectId, {
+        q: qDebounced || undefined,
+        platform: platform || undefined,
+        excludePlatform: platform ? undefined : "manufacturer",
+      }).then((r) => r.inspirations),
     `${catalogVersion}:${version}`
   );
   const list = items ?? [];
@@ -118,7 +121,11 @@ export function InspirationLibrary() {
           onClose={() => setSelected(null)}
           onChanged={() => {
             refresh();
-            fetchInspirations(projectId, { q: q || undefined, platform: platform || undefined }).then((r) => {
+            fetchInspirations(projectId, {
+              q: q || undefined,
+              platform: platform || undefined,
+              excludePlatform: platform ? undefined : "manufacturer",
+            }).then((r) => {
               const updated = r.inspirations.find((i) => i.id === selected.id);
               if (updated) setSelected(updated);
             });

@@ -42,17 +42,27 @@ async function ensureInspirationVisible(projectId: string, inspirationId: string
  * platform blocks extraction, saves the bare URL with whatever metadata
  * (if any) was available instead of failing outright.
  */
+export interface InspirationFieldOverrides {
+  title?: string | null;
+  description?: string | null;
+  caption?: string | null;
+}
+
 export async function saveInspirationUrl(
   projectId: string,
   url: string,
   platformHint?: LinkType,
   preloadedSignals?: PageSignals | null,
-  extraTags?: string[]
+  extraTags?: string[],
+  overrides?: InspirationFieldOverrides
 ): Promise<SaveInspirationResult> {
   const supabase = getSupabaseAdmin();
   const platform = toInspirationPlatform(platformHint ?? classifyUrl(url));
 
   const meta = await extractInspirationMeta(url, preloadedSignals);
+  if (overrides?.title) meta.title = overrides.title;
+  if (overrides?.description !== undefined) meta.description = overrides.description;
+  if (overrides?.caption !== undefined) meta.caption = overrides.caption;
 
   const { data: visibleRows, error: visibleError } = await supabase
     .from("project_inspirations")

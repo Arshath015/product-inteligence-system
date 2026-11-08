@@ -59,6 +59,19 @@ const PRODUCT_CONTAINER_KEYWORDS = [
   "hero-image", "item-image", "product-detail", "product-slider", "product-carousel",
 ];
 
+/** Picks the highest-resolution URL from a `srcset`-style attribute ("url 400w, url 800w, ..."). */
+function bestFromSrcset(value: string | undefined): string | undefined {
+  if (!value) return undefined;
+  let best: { url: string; size: number } | null = null;
+  for (const entry of value.split(",")) {
+    const [url, descriptor] = entry.trim().split(/\s+/);
+    if (!url) continue;
+    const size = descriptor ? parseFloat(descriptor) : 0;
+    if (!best || size > best.size) best = { url, size };
+  }
+  return best?.url;
+}
+
 function containerFlags($: CheerioAPI, el: Cheerio<AnyNode>): {
   inProductContainer: boolean;
   inExcludedContainer: boolean;
@@ -137,12 +150,21 @@ export async function fetchPageSignals(url: string): Promise<PageSignals> {
   const galleryImages: ImageCandidate[] = [];
   $("img").each((_, el) => {
     const node = $(el);
+    // Lazy-load attributes take priority over `src` — a lazy-loaded image's
+    // `src` is near-universally a blank/placeholder data: URI (1x1 pixel or
+    // empty SVG) until JS swaps it in, so checking `src` first means the
+    // OR-chain stops on a worthless placeholder and never reaches the real
+    // URL. Covers the common conventions plus NitroPack's `nitro-lazy-*`
+    // (a widely-used WordPress performance plugin, not site-specific).
     const raw =
-      node.attr("src") ||
       node.attr("data-src") ||
       node.attr("data-lazy-src") ||
       node.attr("data-original") ||
-      (node.attr("srcset") || "").split(",")[0]?.trim().split(" ")[0];
+      node.attr("nitro-lazy-src") ||
+      (node.attr("src") && !node.attr("src")!.startsWith("data:") ? node.attr("src") : undefined) ||
+      bestFromSrcset(node.attr("nitro-lazy-srcset")) ||
+      bestFromSrcset(node.attr("data-srcset")) ||
+      bestFromSrcset(node.attr("srcset"));
     if (!raw || raw.startsWith("data:")) return;
     const abs = absolutize(raw, finalUrl);
     if (!abs) return;

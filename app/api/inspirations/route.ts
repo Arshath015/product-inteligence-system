@@ -10,6 +10,7 @@ export async function GET(req: NextRequest) {
   if (!projectId) return missingProjectIdResponse();
   const q = sp.get("q")?.trim();
   const platform = sp.get("platform")?.trim();
+  const excludePlatform = sp.get("excludePlatform")?.trim();
   const tag = sp.get("tag")?.trim();
   const limit = Math.min(Number(sp.get("limit") ?? 60), 120);
 
@@ -24,6 +25,7 @@ export async function GET(req: NextRequest) {
     .eq("status", "active");
 
   if (platform) query = query.eq("platform", platform);
+  if (excludePlatform) query = query.neq("platform", excludePlatform);
   if (tag) query = query.contains("tags", [tag]);
   if (q) query = query.or(`title.ilike.%${q}%,description.ilike.%${q}%,caption.ilike.%${q}%`);
 

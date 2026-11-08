@@ -5,6 +5,7 @@ import { discoverProductLinks } from "@/lib/bulk/discoverLinks";
 import { ingestProductUrl } from "@/lib/ingest";
 import { saveInspirationUrl } from "@/lib/inspiration";
 import { resolveBrand } from "@/lib/catalog";
+import { extractManufacturerInfo } from "@/lib/manufacturerExtraction";
 import type { Product, Inspiration } from "@/lib/types";
 
 export type BulkStatus =
@@ -117,6 +118,25 @@ const KIND_LABEL: Record<ContentKind, string> = {
   general: "general page",
 };
 
+/**
+ * Saves a directory-type entry (artisan/manufacturer/gallery/collection
+ * reference) to Inspiration, enriching it with name/location/craft pulled
+ * from the page via `extractManufacturerInfo` so the Manufacturers section
+ * has real fields to display instead of a bare link.
+ */
+async function saveDirectoryEntry(projectId: string, url: string, signals: PageSignals | null, tags: string[]) {
+  const isDirectory = tags.includes("artisan-directory");
+  const info = await extractManufacturerInfo(url, signals, isDirectory);
+  const overrides = info
+    ? { title: info.name, caption: info.location, description: info.craft ?? info.description }
+    : undefined;
+  return saveInspirationUrl(projectId, url, undefined, signals, tags, overrides).catch((err) => ({
+    status: "failed" as const,
+    inspiration: null,
+    message: (err as Error).message,
+  }));
+}
+
 async function processOneUrl(
   projectId: string,
   url: string,
@@ -177,11 +197,7 @@ async function processOneUrl(
           discovered,
         };
       }
-      const result = await saveInspirationUrl(projectId, url, undefined, signals, [kind]).catch((err) => ({
-        status: "failed" as const,
-        inspiration: null,
-        message: (err as Error).message,
-      }));
+      const result = await saveDirectoryEntry(projectId, url, signals, [kind]);
       return {
         url,
         kind,
@@ -193,11 +209,7 @@ async function processOneUrl(
 
     case "brand": {
       if (!signals) {
-        const result = await saveInspirationUrl(projectId, url, undefined, null, ["brand"]).catch((err) => ({
-          status: "failed" as const,
-          inspiration: null,
-          message: (err as Error).message,
-        }));
+        const result = await saveDirectoryEntry(projectId, url, null, ["brand"]);
         return {
           url,
           kind,
@@ -233,11 +245,7 @@ async function processOneUrl(
     case "artisan_profile":
     case "artisan_directory": {
       const tag = kind === "artisan_profile" ? "artisan" : "artisan-directory";
-      const result = await saveInspirationUrl(projectId, url, undefined, signals, [tag]).catch((err) => ({
-        status: "failed" as const,
-        inspiration: null,
-        message: (err as Error).message,
-      }));
+      const result = await saveDirectoryEntry(projectId, url, signals, [tag]);
       return {
         url,
         kind,
