@@ -65,7 +65,7 @@ export function buildChatTools(ctx: ToolCtx) {
           .string()
           .nullable()
           .describe(
-            "One of: sofas, armchairs, lounge-chairs, dining-chairs, tables, coffee-tables, side-tables, beds, lighting, accessories, rugs, storage, outdoor, other"
+            "One of: sofas, armchairs, lounge-chairs, dining-chairs, desks, tables, dining-tables, consoles, coffee-tables, side-tables, beds, lighting, accessories, rugs, storage, outdoor, other"
           ),
         brandSlug: z.string().nullable().describe("Filter by brand slug if known"),
         limit: z.number().int().min(1).max(12).default(6),

@@ -11,7 +11,10 @@ const CATEGORY_SLUGS = [
   "armchairs",
   "lounge-chairs",
   "dining-chairs",
+  "desks",
   "tables",
+  "dining-tables",
+  "consoles",
   "coffee-tables",
   "side-tables",
   "beds",
@@ -22,13 +25,17 @@ const CATEGORY_SLUGS = [
   "outdoor",
   "other",
 ] as const;
-type CategorySlug = (typeof CATEGORY_SLUGS)[number];
+export type CategorySlug = (typeof CATEGORY_SLUGS)[number];
 
 const extractionSchema = z.object({
   name: z.string().describe("The product's name/model, without the brand name prefixed"),
   brandName: z.string().nullable().describe("Manufacturer/brand name"),
   designerName: z.string().nullable().describe("Designer name if credited, else null"),
-  categoryHint: z.enum(CATEGORY_SLUGS).describe("Best matching category"),
+  categoryHint: z
+    .enum(CATEGORY_SLUGS)
+    .describe(
+      'Best matching category. Use "other" only if genuinely no category fits — never as a default when unsure; re-read the product name/type first. A writing/work surface with drawers or a dedicated work use is "desks", not "tables". A narrow table meant to stand against a wall (entryway/hallway) is "consoles". A table sized for dining seating is "dining-tables". Use the general "tables" bucket only for a table that doesn\'t fit any of the more specific table types (desks/consoles/dining-tables/coffee-tables/side-tables).'
+    ),
   description: z.string().nullable().describe("1-3 sentence product description"),
   materials: z.string().nullable(),
   dimensions: z.string().nullable(),
@@ -200,14 +207,21 @@ function imagesFromJsonLd(jsonLd: unknown[], baseUrl: string): string[] {
   return urls;
 }
 
+// Ordered most-specific-first — a combined-text scan returns the FIRST
+// matching slug, so a general bucket's keywords (e.g. "table") must never
+// precede a more specific one that's also a kind of table (e.g. "console
+// table", "dining table") or it would always win first.
 const CATEGORY_KEYWORDS: [CategorySlug, string[]][] = [
   ["sofas", ["sofa", "settee", "couch", "sectional"]],
-  ["armchairs", ["armchair", "accent chair", "lounge chair", "easy chair"]],
+  ["armchairs", ["armchair", "accent chair", "easy chair"]],
   ["lounge-chairs", ["lounge chair", "recliner", "chaise"]],
   ["dining-chairs", ["dining chair", "chair"]],
+  ["desks", ["desk", "writing desk", "secretary desk", "workstation"]],
+  ["consoles", ["console", "entryway table", "hallway table", "entry table"]],
+  ["dining-tables", ["dining table", "dinner table"]],
   ["coffee-tables", ["coffee table", "cocktail table", "low table"]],
-  ["side-tables", ["side table", "end table", "nightstand"]],
-  ["tables", ["table", "desk"]],
+  ["side-tables", ["side table", "end table", "nightstand", "accent table"]],
+  ["tables", ["table"]],
   ["beds", ["bed", "headboard"]],
   ["lighting", ["lamp", "light", "lighting", "chandelier", "sconce", "pendant"]],
   ["rugs", ["rug", "carpet"]],
@@ -217,13 +231,37 @@ const CATEGORY_KEYWORDS: [CategorySlug, string[]][] = [
 ];
 
 /** Cheap keyword match against a free-text product-type string — no LLM needed. */
-function guessCategorySlug(text: string | null | undefined): CategorySlug {
+export function guessCategorySlug(text: string | null | undefined): CategorySlug {
   if (!text) return "other";
   const lower = text.toLowerCase();
   for (const [slug, keywords] of CATEGORY_KEYWORDS) {
     if (keywords.some((k) => lower.includes(k))) return slug;
   }
   return "other";
+}
+
+/**
+ * Never settles for "other" as long as SOME available text signal confidently
+ * names a real category — the model (or the JSON-LD keyword scan) saying
+ * "other" means "I don't see it", not "there is no category". A confident
+ * primary hint is always trusted as-is (never second-guessed); only when it
+ * comes back "other" do we escalate, trying:
+ *  1. The product's own name alone — short, specific, and frequently the
+ *     clearest signal of all (e.g. "Wave Desk", "Wave Console").
+ *  2. A full-text scan across every signal available (description, meta
+ *     description, page title, full page text) — catches cases where the
+ *     category is only ever mentioned in body copy (e.g. "sofa" appearing
+ *     in the page text but never in the title or a short description).
+ */
+export function refineCategoryHint(
+  primaryHint: CategorySlug,
+  name: string,
+  parts: (string | null | undefined)[]
+): CategorySlug {
+  if (primaryHint !== "other") return primaryHint;
+  const fromName = guessCategorySlug(name);
+  if (fromName !== "other") return fromName;
+  return guessCategorySlug(parts.filter(Boolean).join(" "));
 }
 
 interface JsonLdProduct {
@@ -370,11 +408,22 @@ export async function extractProductFromUrl(
         brandTokens
       );
       const imageUrls = ranked.slice(0, 10).map((c) => c.url);
+      // Product image filenames/paths are often curated and surprisingly
+      // literal about product type (e.g. ".../bebitalia_sofa_Charles_01.jpg")
+      // — a useful last-resort signal when the visible text never says it.
+      const imageText = imageUrls.join(" ");
+      const categoryHint = refineCategoryHint(fromJsonLd.categoryHint, fromJsonLd.name, [
+        fromJsonLd.description,
+        signals.metaDescription,
+        signals.title,
+        signals.textSnippet,
+        imageText,
+      ]);
       return {
         name: fromJsonLd.name,
         brandName,
         designerName,
-        categoryHint: fromJsonLd.categoryHint,
+        categoryHint,
         description: fromJsonLd.description,
         materials: null,
         dimensions: null,
@@ -447,12 +496,20 @@ export async function extractProductFromUrl(
   // images we have are generic (brand banner, lifestyle shot, etc.), so
   // whatever we pick should get a vision sanity-check before being saved.
   const imagesLowConfidence = ranked.length === 0 || ranked[0].score < 12;
+  const categoryHint = refineCategoryHint(object.categoryHint, object.name, [
+    object.description,
+    signals?.metaDescription,
+    signals?.title,
+    signals?.textSnippet,
+    fallbackText,
+    imageUrls.join(" "),
+  ]);
 
   return {
     name: object.name,
     brandName,
     designerName,
-    categoryHint: object.categoryHint,
+    categoryHint,
     description: object.description,
     materials: object.materials,
     dimensions: object.dimensions,
