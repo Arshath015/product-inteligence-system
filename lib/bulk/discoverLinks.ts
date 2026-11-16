@@ -86,6 +86,24 @@ function isDeepProductUrl(segs: string[]): boolean {
 // ── public functions ─────────────────────────────────────────────────────────
 
 /**
+ * Returns true when a URL path looks like a specific product detail page —
+ * not a category, collection root, or non-catalogue page. Used both for
+ * sitemap classification and for filtering Tavily search results.
+ */
+export function isProductPageUrl(url: string): boolean {
+  try {
+    const segs = pathSegs(url);
+    if (segs.length === 0) return false;
+    if (segs.some((s) => SKIP_SET.has(s))) return false;
+    const productIdx = segs.findIndex((s) => PRODUCT_WORD_SET.has(s));
+    if (productIdx !== -1 && productIdx < segs.length - 1) return true;
+    return isDeepProductUrl(segs);
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Scans a page's links for individual product detail pages.
  * Works with English AND multilingual URL structures (Italian, French, German,
  * Spanish). Also detects deep collection-hierarchy URLs where the product slug

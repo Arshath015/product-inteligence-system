@@ -366,8 +366,11 @@ export async function fetchPageSignals(url: string): Promise<PageSignals> {
 export function hasUsableSignal(signals: PageSignals | null): boolean {
   if (!signals) return false;
   const substantialText = signals.textSnippet.length > 150;
-  const hasMeta = Boolean(signals.title || signals.metaDescription);
   const hasStructuredData = signals.jsonLd.length > 0;
   const hasImages = signals.ogImages.length > 0 || signals.galleryImages.length > 0;
-  return substantialText || hasMeta || hasStructuredData || hasImages;
+  // A title alone is NOT treated as usable: SPA shells always have a <title>
+  // tag but contain no product content before JS hydration. Requiring text,
+  // structured data, or images ensures we fall through to Tavily Extract for
+  // SPA/CDN-blocked pages rather than sending an empty shell to the model.
+  return substantialText || hasStructuredData || hasImages;
 }

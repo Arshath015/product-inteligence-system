@@ -288,7 +288,21 @@ async function processOneUrl(
         { maxProducts: BRAND_MAX_PRODUCTS, maxCollections: BRAND_MAX_COLLECTIONS },
       );
 
-      const toIngest = crawl.productUrls.slice(0, BRAND_MAX_INGEST);
+      // On re-runs, filter out URLs already owned by this project so the cap
+      // advances through the catalogue rather than retrying the same first N.
+      let remaining = crawl.productUrls;
+      if (crawl.productUrls.length > BRAND_MAX_INGEST && resolvedBrand?.id) {
+        const supabase = getSupabaseAdmin();
+        const { data: done } = await supabase
+          .from("products")
+          .select("source_url")
+          .eq("project_id", projectId)
+          .in("source_url", crawl.productUrls);
+        const doneSet = new Set((done ?? []).map((p) => p.source_url as string).filter(Boolean));
+        remaining = crawl.productUrls.filter((u) => !doneSet.has(u));
+      }
+
+      const toIngest = remaining.slice(0, BRAND_MAX_INGEST);
       const discovered = toIngest.length > 0
         ? await processDiscovered(projectId, toIngest, resolvedBrand?.id)
         : [];
@@ -305,9 +319,12 @@ async function processOneUrl(
             ? " via search fallback"
             : "";
 
+      const alreadyDone = crawl.productUrls.length - remaining.length;
       const cappedNote =
-        crawl.productUrls.length > BRAND_MAX_INGEST
-          ? ` Found ${crawl.productUrls.length} product URLs total — imported first ${BRAND_MAX_INGEST}. Re-run to continue.`
+        remaining.length > BRAND_MAX_INGEST
+          ? ` Found ${crawl.productUrls.length} product URLs — importing ${BRAND_MAX_INGEST} new ones${alreadyDone > 0 ? ` (${alreadyDone} already in catalogue)` : ""}. Re-run to continue.`
+          : alreadyDone > 0 && remaining.length === 0
+          ? ` All ${crawl.productUrls.length} discovered product URLs already in catalogue.`
           : crawl.productUrls.length >= BRAND_MAX_PRODUCTS
           ? ` Catalogue may have more — run again to continue.`
           : "";

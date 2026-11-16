@@ -4,6 +4,7 @@ import {
   discoverProductLinks,
   discoverCollectionLinks,
   discoverFromSitemap,
+  isProductPageUrl,
 } from "@/lib/bulk/discoverLinks";
 import { tavilySearch } from "@/lib/tavily";
 
@@ -154,27 +155,35 @@ export async function crawlBrandCatalogue(
     });
   }
 
-  // ── 3. Tavily fallback for JS-rendered catalogues ──────────────────────────
+  // ── 3. Tavily fallback for JS-rendered / CDN-blocked catalogues ───────────
   if (productUrls.length < 3) {
     onProgress?.(`No HTML products found — searching ${host} via Tavily…`);
     tavilyFallback = true;
     try {
-      const { results } = await tavilySearch(`site:${host} furniture product`, {
-        maxResults: 20,
-        includeImages: false,
-        searchDepth: "advanced",
-      });
-      for (const r of results) {
-        if (hostOf(r.url) === host) addUrl(r.url);
+      // Run category-specific queries in parallel to find individual product
+      // detail pages (not just category landing pages). Without site: restriction
+      // so search engines' per-page indexing surfaces specific model pages.
+      const CATEGORY_TERMS = ["sofa", "armchair", "table", "chair", "bed", "wardrobe", "storage"];
+      const categorySearches = CATEGORY_TERMS.slice(0, 5).map((term) =>
+        tavilySearch(`${host} ${term}`, { maxResults: 6, includeImages: false, searchDepth: "basic" }).catch(() => null)
+      );
+      const categoryResults = await Promise.all(categorySearches);
+      for (const batch of categoryResults) {
+        if (!batch) continue;
+        for (const r of batch.results) {
+          // Prefer URLs that look like product detail pages, skip category roots
+          if (hostOf(r.url) === host && isProductPageUrl(r.url)) addUrl(r.url);
+        }
       }
-      // Try furniture-specific queries if first attempt thin
+
+      // Broad site: search as a catch-all when category queries found nothing
       if (productUrls.length < 3) {
-        const { results: r2 } = await tavilySearch(`${host} products collection`, {
-          maxResults: 15,
+        const { results: broad } = await tavilySearch(`site:${host}`, {
+          maxResults: 20,
           includeImages: false,
-          searchDepth: "basic",
+          searchDepth: "advanced",
         });
-        for (const r of r2) {
+        for (const r of broad) {
           if (hostOf(r.url) === host) addUrl(r.url);
         }
       }
