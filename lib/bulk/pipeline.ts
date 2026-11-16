@@ -54,8 +54,8 @@ export interface BulkIngestSummary {
 const CONCURRENCY = 4;
 const FETCH_TIMEOUT_MS = 15_000;
 const COLLECTION_DISCOVERY_LIMIT = 20;
-const BRAND_MAX_PRODUCTS = 60;
-const BRAND_MAX_COLLECTIONS = 15;
+const BRAND_MAX_PRODUCTS = 250;
+const BRAND_MAX_COLLECTIONS = 30;
 
 async function runPool<T, R>(items: T[], limit: number, worker: (item: T) => Promise<R>): Promise<R[]> {
   const results: R[] = new Array(items.length);
