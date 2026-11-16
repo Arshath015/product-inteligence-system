@@ -112,6 +112,7 @@ function Shell({ children }: { children: React.ReactNode }) {
             {navLink(`/p/${projectId}/brands`, "Brands")}
             {navLink(`/p/${projectId}/manufacturers`, "Manufacturers")}
             {navLink(`/p/${projectId}/inspiration`, "Inspiration")}
+            {navLink(`/p/${projectId}/brand-import`, "Brand Import")}
           </nav>
         </div>
         <div className="flex items-center gap-2">

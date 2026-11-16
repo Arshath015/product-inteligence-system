@@ -188,7 +188,7 @@ export function buildChatTools(ctx: ToolCtx) {
 
     add_brand_catalogue: tool({
       description:
-        "Import ALL products from a brand's website into the active project catalogue. Use when the user asks to 'add all products from [brand]', 'import [brand] catalogue', or 'get everything from [brand].com'. Crawls the brand site across all collection and category pages, discovers individual product URLs, and imports them in bulk. Handles Italian, French, German and Spanish URL structures. Reports exactly how many were discovered, added, duplicate, and failed.",
+        "Register a brand and direct the user to the Brand Import tab to fetch all products. Use when the user asks to 'add all products from [brand]', 'import [brand] catalogue', or 'get everything from [brand].com'. Saves the brand name in the Brands section and tells the user to use the dedicated Brand Import page for live extraction with product selection.",
       inputSchema: z.object({
         brandUrl: z
           .string()
@@ -198,75 +198,16 @@ export function buildChatTools(ctx: ToolCtx) {
           .describe("The brand's display name, e.g. Pianca"),
       }),
       execute: async ({ brandUrl, brandName }) => {
-        // Auto-continue until all products are ingested or we hit the safety cap.
-        // Each run processes up to 50 products; runs repeat within the same request
-        // as long as the pipeline reports pendingProducts > 0.
-        // Safety cap: at most 5 runs (250 products max per chat message; a brand with
-        // 300+ products is unusual and the user can re-submit to continue further).
-        const MAX_AUTO_RUNS = 5;
-        let totalAdded = 0;
-        let totalDupes = 0;
-        let totalFailed = 0;
-        const allNewProducts: Product[] = [];
-        let pendingProducts = 1; // start > 0 to enter the loop
-        let runCount = 0;
-
-        while (pendingProducts > 0 && runCount < MAX_AUTO_RUNS) {
-          runCount++;
-          const summary = await processBulkUrls(ctx.projectId, [brandUrl]).catch((err) => ({
-            total: 1,
-            results: [],
-            counts: {
-              productsAdded: 0,
-              discoveredProductsAdded: 0,
-              brandsCreated: 0,
-              brandsMatched: 0,
-              manufacturersSaved: 0,
-              inspirationSaved: 0,
-              duplicates: 0,
-              failed: 1,
-            },
-            error: (err as Error).message,
-          }));
-
-          const batchAdded = summary.counts.productsAdded + summary.counts.discoveredProductsAdded;
-          totalAdded += batchAdded;
-          totalDupes += summary.counts.duplicates;
-          totalFailed += summary.counts.failed;
-
-          for (const r of summary.results) {
-            if (r.product) allNewProducts.push(r.product);
-            for (const d of r.discovered ?? []) {
-              if (d.product) allNewProducts.push(d.product);
-            }
-          }
-
-          // Check if the pipeline says there are still products remaining
-          const brandResult = summary.results.find((r) => r.kind === "brand");
-          pendingProducts = brandResult?.pendingProducts ?? 0;
-
-          // If this run added nothing new (all dupes/failures), stop to avoid an
-          // infinite loop on a brand whose remaining URLs all permanently fail.
-          if (batchAdded === 0 && summary.counts.duplicates === 0) break;
-        }
-
-        pushShown(ctx, allNewProducts);
+        // Register the brand in this project (creates the brand record if needed)
+        // so it appears in the Brands tab, then direct the user to the Brand Import
+        // tab where they can watch live extraction progress and select which
+        // products to add.
+        await processBulkUrls(ctx.projectId, [brandUrl]).catch(() => null);
 
         return {
           brand: brandName,
-          discovered: totalAdded + totalDupes,
-          added: totalAdded,
-          duplicates: totalDupes,
-          failed: totalFailed,
-          runs: runCount,
-          note:
-            totalAdded === 0 && totalFailed > 0
-              ? `Could not extract products from ${brandName}. The site may render its catalogue dynamically (JS-only). Try pasting individual product page URLs directly.`
-              : totalAdded === 0 && totalDupes > 0
-                ? `All discovered ${brandName} products are already in your catalogue.`
-                : pendingProducts > 0
-                  ? `Imported ${totalAdded} products so far. ${pendingProducts} more remain — re-submit to continue.`
-                  : undefined,
+          action: "redirect_to_import",
+          message: `Added **${brandName}** to your Brands. Use the **Brand Import** tab in the top navigation to extract all products with a live progress counter and product selection.`,
         };
       },
     }),
