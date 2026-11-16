@@ -40,6 +40,7 @@ interface ChatContextValue {
   sending: boolean;
   catalogVersion: number;
   sendMessage: (text: string) => Promise<void>;
+  stopGeneration: () => void;
   newChat: () => void;
   switchConversation: (id: string) => Promise<void>;
   renameConversation: (id: string, title: string) => Promise<void>;
@@ -62,6 +63,11 @@ export function ChatProvider({ projectId, children }: { projectId: string; child
   const [selectedProduct, setSelectedProduct] = useState<Product | null>(null);
   const activeId = useRef<string | null>(null);
   const hydrated = useRef(false);
+  const abortRef = useRef<AbortController | null>(null);
+  // Bulk progress lines buffer — flushed to state max every 200 ms so
+  // hundreds of SSE events don't trigger hundreds of re-renders.
+  const bulkBufRef = useRef<{ id: string; lines: BulkProgressLineVM[] }>({ id: "", lines: [] });
+  const bulkTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const refreshConversations = useCallback(async () => {
     const { conversations: list } = await fetchConversations(projectId);
@@ -117,11 +123,17 @@ export function ChatProvider({ projectId, children }: { projectId: string; child
     [loadConversation]
   );
 
+  const stopGeneration = useCallback(() => {
+    abortRef.current?.abort();
+    abortRef.current = null;
+  }, []);
+
   const newChat = useCallback(() => {
+    stopGeneration();
     activeId.current = null;
     setActiveConversationId(null);
     setMessages([]);
-  }, []);
+  }, [stopGeneration]);
 
   const renameConversation = useCallback(
     async (id: string, title: string) => {
@@ -154,81 +166,119 @@ export function ChatProvider({ projectId, children }: { projectId: string; child
       const trimmed = text.trim();
       if (!trimmed) return;
 
+      // Cancel any in-flight request before starting a new one
+      abortRef.current?.abort();
+      const controller = new AbortController();
+      abortRef.current = controller;
+
       const userMsg: ChatMessageVM = { id: `tmp-${Date.now()}`, role: "user", content: trimmed };
       const pendingId = `pending-${Date.now()}`;
       const pendingMsg: ChatMessageVM = { id: pendingId, role: "assistant", content: "", pending: true };
       setMessages((prev) => [...prev, userMsg, pendingMsg]);
       setSending(true);
 
+      // Reset bulk progress buffer for this message
+      bulkBufRef.current = { id: pendingId, lines: [] };
+      if (bulkTimerRef.current) clearTimeout(bulkTimerRef.current);
+
+      const flushBulkBuf = () => {
+        if (bulkTimerRef.current) clearTimeout(bulkTimerRef.current);
+        bulkTimerRef.current = null;
+        const { id, lines } = bulkBufRef.current;
+        if (!lines.length || id !== pendingId) return;
+        const toFlush = lines.splice(0);
+        setMessages((prev) =>
+          prev.map((m) =>
+            m.id === pendingId && m.bulk ? { ...m, bulk: { ...m.bulk, lines: [...m.bulk.lines, ...toFlush] } } : m
+          )
+        );
+      };
+
       let streamedText = "";
 
       try {
-        await streamChatMessage(projectId, trimmed, activeId.current, {
-          onMeta: (conversationId) => {
-            if (!activeId.current) {
-              activeId.current = conversationId;
-              setActiveConversationId(conversationId);
-            }
+        await streamChatMessage(
+          projectId,
+          trimmed,
+          activeId.current,
+          {
+            onMeta: (conversationId) => {
+              if (!activeId.current) {
+                activeId.current = conversationId;
+                setActiveConversationId(conversationId);
+              }
+            },
+            onBulkStart: (total) => {
+              setMessages((prev) =>
+                prev.map((m) =>
+                  m.id === pendingId
+                    ? { ...m, pending: false, bulk: { total, lines: [], inProgress: true, failedUrls: [] } }
+                    : m
+                )
+              );
+            },
+            onBulkProgress: (line) => {
+              // Buffer lines and flush at most every 200 ms to avoid per-event re-renders
+              bulkBufRef.current.lines.push(line);
+              if (!bulkTimerRef.current) {
+                bulkTimerRef.current = setTimeout(flushBulkBuf, 200);
+              }
+            },
+            onDelta: (delta) => {
+              flushBulkBuf(); // flush any pending bulk lines before switching to text
+              streamedText += delta;
+              setMessages((prev) =>
+                prev.map((m) =>
+                  m.id === pendingId
+                    ? { ...m, content: streamedText, pending: false, bulk: m.bulk ? { ...m.bulk, inProgress: false } : undefined }
+                    : m
+                )
+              );
+            },
+            onDone: (data) => {
+              flushBulkBuf();
+              activeId.current = data.conversationId;
+              setActiveConversationId(data.conversationId);
+              setMessages((prev) =>
+                prev.map((m) =>
+                  m.id === pendingId
+                    ? {
+                        id: `assistant-${Date.now()}`,
+                        role: "assistant",
+                        content: data.reply,
+                        products: data.products,
+                        inspirations: data.inspirations,
+                        bulk: m.bulk ? { ...m.bulk, inProgress: false, failedUrls: data.failedUrls ?? [] } : undefined,
+                      }
+                    : m
+                )
+              );
+              if (data.products?.length || data.inspirations?.length) setCatalogVersion((v) => v + 1);
+            },
           },
-          onBulkStart: (total) => {
-            setMessages((prev) =>
-              prev.map((m) =>
-                m.id === pendingId
-                  ? { ...m, pending: false, bulk: { total, lines: [], inProgress: true, failedUrls: [] } }
-                  : m
-              )
-            );
-          },
-          onBulkProgress: (line) => {
-            setMessages((prev) =>
-              prev.map((m) => (m.id === pendingId && m.bulk ? { ...m, bulk: { ...m.bulk, lines: [...m.bulk.lines, line] } } : m))
-            );
-          },
-          onDelta: (delta) => {
-            streamedText += delta;
-            setMessages((prev) =>
-              prev.map((m) =>
-                m.id === pendingId
-                  ? {
-                      ...m,
-                      content: streamedText,
-                      pending: false,
-                      bulk: m.bulk ? { ...m.bulk, inProgress: false } : undefined,
-                    }
-                  : m
-              )
-            );
-          },
-          onDone: (data) => {
-            activeId.current = data.conversationId;
-            setActiveConversationId(data.conversationId);
-            setMessages((prev) =>
-              prev.map((m) =>
-                m.id === pendingId
-                  ? {
-                      id: `assistant-${Date.now()}`,
-                      role: "assistant",
-                      content: data.reply,
-                      products: data.products,
-                      inspirations: data.inspirations,
-                      bulk: m.bulk ? { ...m.bulk, inProgress: false, failedUrls: data.failedUrls ?? [] } : undefined,
-                    }
-                  : m
-              )
-            );
-            if (data.products?.length || data.inspirations?.length) setCatalogVersion((v) => v + 1);
-          },
-        });
+          controller.signal
+        );
         await refreshConversations();
       } catch (err) {
+        const isAbort = (err as Error).name === "AbortError";
+        flushBulkBuf();
         setMessages((prev) =>
           prev.map((m) =>
             m.id === pendingId
-              ? { ...m, pending: false, content: `Something went wrong: ${(err as Error).message}` }
+              ? {
+                  ...m,
+                  pending: false,
+                  content: isAbort
+                    ? streamedText || "Generation stopped."
+                    : `Something went wrong: ${(err as Error).message}`,
+                  bulk: m.bulk ? { ...m.bulk, inProgress: false } : undefined,
+                }
               : m
           )
         );
+        if (!isAbort) return;
       } finally {
+        if (abortRef.current === controller) abortRef.current = null;
         setSending(false);
       }
     },
@@ -244,6 +294,7 @@ export function ChatProvider({ projectId, children }: { projectId: string; child
         sending,
         catalogVersion,
         sendMessage,
+        stopGeneration,
         newChat,
         switchConversation,
         renameConversation,

@@ -172,12 +172,14 @@ export async function streamChatMessage(
     onDone?: (data: ChatStreamDone) => void;
     onBulkStart?: (total: number) => void;
     onBulkProgress?: (line: BulkProgressLine) => void;
-  }
+  },
+  signal?: AbortSignal
 ) {
   const res = await fetch("/api/chat", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ message, conversationId, projectId }),
+    signal,
   });
   if (!res.ok || !res.body) {
     const body = await res.json().catch(() => ({}));

@@ -119,10 +119,10 @@ async function discoverViaSearch(url: string): Promise<string[]> {
   }
 }
 
-async function processDiscovered(projectId: string, urls: string[]): Promise<BulkUrlResult[]> {
+async function processDiscovered(projectId: string, urls: string[], knownBrandId?: string): Promise<BulkUrlResult[]> {
   if (urls.length === 0) return [];
   return runPool(urls, CONCURRENCY, async (url) => {
-    const result = await ingestProductUrl(projectId, url).catch((err) => ({
+    const result = await ingestProductUrl(projectId, url, undefined, knownBrandId).catch((err) => ({
       status: "failed" as const,
       product: null,
       message: (err as Error).message,
@@ -288,7 +288,7 @@ async function processOneUrl(
       );
 
       const discovered = crawl.productUrls.length > 0
-        ? await processDiscovered(projectId, crawl.productUrls)
+        ? await processDiscovered(projectId, crawl.productUrls, resolvedBrand?.id)
         : [];
 
       const added = discovered.filter((d) => d.status === "product_created").length;

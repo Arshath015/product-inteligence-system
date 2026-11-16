@@ -14,7 +14,7 @@ const MAX_TEXTAREA_HEIGHT = 200;
 const NEAR_BOTTOM_PX = 120;
 
 export function ChatPanel() {
-  const { messages, activeConversationId, sending, sendMessage, openProduct, newChat } = useChat();
+  const { messages, activeConversationId, sending, sendMessage, stopGeneration, openProduct, newChat } = useChat();
   const [input, setInput] = useState("");
   const [analyzing, setAnalyzing] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
@@ -202,13 +202,25 @@ export function ChatPanel() {
             className="min-w-0 flex-1 resize-none bg-transparent px-1 py-1 text-sm outline-none placeholder:text-muted"
             style={{ maxHeight: MAX_TEXTAREA_HEIGHT }}
           />
-          <button
-            type="submit"
-            disabled={sending || !input.trim()}
-            className="flex h-8 items-center rounded-full bg-accent px-3 text-xs font-medium text-accent-foreground transition-colors hover:bg-accent-hover disabled:opacity-40"
-          >
-            Send
-          </button>
+          {sending ? (
+            <button
+              type="button"
+              onClick={stopGeneration}
+              className="flex h-8 items-center gap-1.5 rounded-full border border-border bg-surface-raised px-3 text-xs font-medium text-muted transition-colors hover:border-red-500/50 hover:text-red-400"
+              title="Stop generation"
+            >
+              <span className="inline-block h-2 w-2 rounded-sm bg-current" />
+              Stop
+            </button>
+          ) : (
+            <button
+              type="submit"
+              disabled={!input.trim()}
+              className="flex h-8 items-center rounded-full bg-accent px-3 text-xs font-medium text-accent-foreground transition-colors hover:bg-accent-hover disabled:opacity-40"
+            >
+              Send
+            </button>
+          )}
         </div>
       </form>
     </div>

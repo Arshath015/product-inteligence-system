@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { usePathname } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ChatProvider, useChat } from "@/components/chat/ChatContext";
 import { ChatPanel } from "@/components/chat/ChatPanel";
@@ -18,6 +18,7 @@ const COLLAPSED_KEY = "altossa-chat-collapsed";
 
 function Shell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
+  const router = useRouter();
   const { projectId, project } = useProject();
   const { selectedProduct, closeProduct, bumpCatalog } = useChat();
   const [mobileView, setMobileView] = useState<"catalogue" | "chat">("catalogue");
@@ -115,6 +116,13 @@ function Shell({ children }: { children: React.ReactNode }) {
         </div>
         <div className="flex items-center gap-2">
           <button
+            onClick={() => router.refresh()}
+            className="hidden h-8 w-8 items-center justify-center rounded-full border border-border text-muted transition-colors hover:border-accent/50 hover:text-foreground sm:flex"
+            title="Refresh"
+          >
+            ↻
+          </button>
+          <button
             onClick={() => setShowImport(true)}
             className="hidden items-center gap-1.5 rounded-full border border-border px-3 py-1.5 text-xs text-muted transition-colors hover:border-accent/50 hover:text-foreground sm:flex"
             title="Import brands, products, or inspiration from another project"
@@ -158,8 +166,8 @@ function Shell({ children }: { children: React.ReactNode }) {
 
       <div className="flex min-h-0 flex-1">
         <aside
-          style={{ width: collapsed ? 0 : chatWidth }}
-          className={`min-w-0 flex-shrink-0 overflow-hidden border-r border-border bg-chat-panel transition-[width] duration-200 ease-out ${
+          style={{ width: collapsed ? 0 : chatWidth, willChange: "width" }}
+          className={`min-w-0 flex-shrink-0 overflow-hidden border-r border-border bg-chat-panel transition-[width] duration-150 ease-out ${
             mobileView === "chat" ? "!w-full flex" : "hidden sm:flex"
           }`}
         >

@@ -49,9 +49,15 @@ interface Downloaded {
  * smaller file) rather than rejected outright.
  */
 async function tryDownload(url: string): Promise<Downloaded | null> {
+  let referer: string | undefined;
+  try { referer = new URL(url).origin + "/"; } catch { /* ignore */ }
+
   let res: Response;
   try {
-    res = await fetch(url, { headers: BROWSER_HEADERS, redirect: "follow" });
+    res = await fetch(url, {
+      headers: { ...BROWSER_HEADERS, ...(referer ? { Referer: referer } : {}) },
+      redirect: "follow",
+    });
   } catch {
     return null;
   }

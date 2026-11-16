@@ -39,6 +39,21 @@ async function uniqueSlug(projectId: string, base: string): Promise<string> {
 }
 
 /**
+ * Returns true when a name looks like a person's name (e.g. "Odo Fioravanti",
+ * "Philippe Tabet") rather than a brand/company. Used to demote an extracted
+ * "brandName" to designerName when we already know the parent brand from a
+ * brand-wide crawl and the LLM mistakenly returns the credited designer as brand.
+ */
+function looksLikePersonName(name: string): boolean {
+  const words = name.trim().split(/\s+/);
+  if (words.length < 2 || words.length > 4) return false;
+  const COMPANY_TOKENS = /\b(spa|s\.r\.l\.|srl|s\.p\.a\.|ltd|llc|inc|corp|gmbh|ag|bv|nv|sarl|sas|group|design|studio|furniture|home|living|italia|international)\b/i;
+  if (COMPANY_TOKENS.test(name)) return false;
+  // All words start with uppercase (or a letter for accented names like "d'")
+  return words.every((w) => /^[A-ZÀ-Ö]/.test(w) || /^[a-z]'[A-Z]/.test(w));
+}
+
+/**
  * Full "paste a URL" pipeline: extract -> resolve brand/designer/category ->
  * dedupe -> create or enrich -> persist images. Scoped to a single project:
  * duplicate detection only looks at products VISIBLE to this project, new
@@ -47,11 +62,16 @@ async function uniqueSlug(projectId: string, base: string): Promise<string> {
  * its fields are never modified — referencing is read-only by design.
  * Idempotent per project, which matters because a failed Groq key can cause
  * the whole chat turn to retry.
+ *
+ * `parentBrandId` — when provided (brand-wide crawl context), use this brand
+ * directly instead of resolving from extraction. If the extracted brandName
+ * looks like a person name and no designer was found, salvage it as the designer.
  */
 export async function ingestProductUrl(
   projectId: string,
   url: string,
-  preloadedSignals?: PageSignals | null
+  preloadedSignals?: PageSignals | null,
+  parentBrandId?: string
 ): Promise<IngestResult> {
   const supabase = getSupabaseAdmin();
 
@@ -85,9 +105,16 @@ export async function ingestProductUrl(
     };
   }
 
+  // When a parent brand is known (brand-wide crawl), use it directly.
+  // If the LLM returned a designer's name as the brand, salvage it.
+  let effectiveDesignerName = extracted.designerName;
+  if (parentBrandId && !effectiveDesignerName && extracted.brandName && looksLikePersonName(extracted.brandName)) {
+    effectiveDesignerName = extracted.brandName;
+  }
+
   const [resolvedBrand, designerId, categoryId] = await Promise.all([
-    resolveBrandDetailed(projectId, extracted.brandName),
-    resolveDesigner(extracted.designerName),
+    parentBrandId ? Promise.resolve({ id: parentBrandId, created: false }) : resolveBrandDetailed(projectId, extracted.brandName),
+    resolveDesigner(effectiveDesignerName),
     resolveCategory(extracted.categoryHint),
   ]);
   const brandId = resolvedBrand?.id ?? null;
@@ -115,6 +142,7 @@ export async function ingestProductUrl(
       if (!existing.dimensions && extracted.dimensions) patch.dimensions = extracted.dimensions;
       if (!existing.price_text && extracted.priceText) patch.price_text = extracted.priceText;
       if (!existing.designer_id && designerId) patch.designer_id = designerId;
+      if (!existing.brand_id && brandId) patch.brand_id = brandId;
       if (!existing.category_id && categoryId) patch.category_id = categoryId;
       if (!existing.canonical_url && extracted.canonicalUrl) patch.canonical_url = extracted.canonicalUrl;
 
