@@ -54,7 +54,9 @@ const SKIP_SET = new Set([
 // ── helpers ──────────────────────────────────────────────────────────────────
 
 function sameHost(a: string, b: string): boolean {
-  try { return new URL(a).hostname === new URL(b).hostname; } catch { return false; }
+  try {
+    return new URL(a).hostname.replace(/^www\./, "") === new URL(b).hostname.replace(/^www\./, "");
+  } catch { return false; }
 }
 
 function pathSegs(url: string): string[] {
