@@ -357,8 +357,14 @@ export async function extractProductFromUrl(
       const fetched = await fetchPageSignals(url);
       finalUrl = fetched.finalUrl;
       if (hasUsableSignal(fetched)) signals = fetched;
-    } catch {
-      // network/DNS/HTTP failure — fall through to the Tavily escalation below
+    } catch (err) {
+      // Hard 404 or soft 404 (HTTP 200 "not found" page): Tavily would receive
+      // the same dead or error content, so skip the escalation entirely and let
+      // the caller handle the failure quickly.
+      if ((err as Error).message.includes("status 404")) {
+        throw new Error("Page not found (404) — skipping Tavily escalation.");
+      }
+      // Other network/DNS/HTTP failure — fall through to the Tavily escalation below
     }
   }
 

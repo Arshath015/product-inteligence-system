@@ -1,5 +1,5 @@
 import { getSupabaseAdmin } from "@/lib/supabase/server";
-import { fetchPageSignals, type PageSignals } from "@/lib/pageSignals";
+import { fetchPageSignals, BROWSER_HEADERS, type PageSignals } from "@/lib/pageSignals";
 import { classifyFromPath, classifyFromSignals, type ContentKind } from "@/lib/bulk/classify";
 import { discoverProductLinks } from "@/lib/bulk/discoverLinks";
 import { crawlBrandCatalogue } from "@/lib/bulk/brandCrawl";
@@ -57,6 +57,59 @@ const COLLECTION_DISCOVERY_LIMIT = 20;
 const BRAND_MAX_PRODUCTS = 250;
 const BRAND_MAX_INGEST = 50;  // per-run ingestion cap so we stay within Vercel's 300s timeout
 const BRAND_MAX_COLLECTIONS = 30;
+
+// Titles that identify "not found" pages even when the server returns HTTP 200.
+// Same pattern as the one in pageSignals.ts (kept in sync manually).
+const SOFT_404_TITLE_RE =
+  /\b(404|page\s+not\s+found|pagina\s+non\s+trovata|page\s+introuvable|seite\s+nicht\s+gefunden|p[aá]gina\s+no\s+encontrada|page\s+does\s+not\s+exist)\b/i;
+
+/**
+ * Lightweight liveness check for a batch of product URLs. Fetches only the
+ * first 2 KB of each page — enough to read the <title> — and filters out hard
+ * 404s and soft 404s (HTTP 200 but "Page not found" content). Dead sitemap
+ * entries for discontinued products are caught here before they eat ingest
+ * slots and trigger unnecessary Groq / Tavily calls.
+ *
+ * Returns the first `maxLive` URLs that appear to be live product pages.
+ * Any URL that cannot be checked in time is assumed alive (conservative).
+ */
+async function pickLiveUrls(candidates: string[], maxLive: number): Promise<string[]> {
+  const live: string[] = [];
+  const PRE_SCREEN_CONCURRENCY = 20;
+
+  await runPool(candidates, PRE_SCREEN_CONCURRENCY, async (url) => {
+    if (live.length >= maxLive) return; // already have enough — skip remaining
+    try {
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), 4000);
+      const res = await fetch(url, { headers: BROWSER_HEADERS, signal: ctrl.signal });
+      clearTimeout(timer);
+      if (!res.ok) return; // hard 404 — skip
+      // Read just enough HTML to reach </title> (almost always within first 2 KB)
+      const reader = res.body?.getReader();
+      if (!reader) { await res.body?.cancel(); live.push(url); return; }
+      let chunk = "";
+      try {
+        while (chunk.length < 2048) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          chunk += new TextDecoder().decode(value);
+          if (chunk.includes("</title>")) break;
+        }
+      } finally {
+        reader.cancel().catch(() => {/* ignore */});
+      }
+      const titleMatch = chunk.match(/<title>([^<]+)/i);
+      const title = titleMatch?.[1]?.trim() ?? "";
+      if (!SOFT_404_TITLE_RE.test(title)) live.push(url);
+    } catch {
+      // Timeout or network error — assume alive (conservative)
+      if (live.length < maxLive) live.push(url);
+    }
+  });
+
+  return live.slice(0, maxLive);
+}
 
 async function runPool<T, R>(items: T[], limit: number, worker: (item: T) => Promise<R>): Promise<R[]> {
   const results: R[] = new Array(items.length);
@@ -302,7 +355,15 @@ async function processOneUrl(
         remaining = crawl.productUrls.filter((u) => !doneSet.has(u));
       }
 
-      const toIngest = remaining.slice(0, BRAND_MAX_INGEST);
+      // Pre-screen a larger pool to skip soft 404 pages (discontinued products
+      // that still appear in sitemaps). Checking 3× the ingest cap ensures the
+      // cap is filled with live pages even if a third are dead links.
+      const PRE_SCREEN_POOL = BRAND_MAX_INGEST * 3;
+      const candidatesForScreen = remaining.slice(0, PRE_SCREEN_POOL);
+      const liveForIngest = candidatesForScreen.length > BRAND_MAX_INGEST
+        ? await pickLiveUrls(candidatesForScreen, BRAND_MAX_INGEST)
+        : candidatesForScreen;
+      const toIngest = liveForIngest.slice(0, BRAND_MAX_INGEST);
       const discovered = toIngest.length > 0
         ? await processDiscovered(projectId, toIngest, resolvedBrand?.id)
         : [];

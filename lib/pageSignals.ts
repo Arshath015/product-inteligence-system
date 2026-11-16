@@ -248,6 +248,12 @@ function containerFlags($: CheerioAPI, el: Cheerio<AnyNode>): {
  * twice. Throws on network/HTTP failure; callers decide the fallback
  * (Tavily extract, mark failed, etc.).
  */
+// Titles that mean "this page doesn't exist" even when the server returns HTTP 200
+// (soft 404). Common on WordPress sites that show a "not found" template at a 200
+// status code for discontinued products still listed in sitemaps.
+const SOFT_404_TITLE_RE =
+  /\b(404|page\s+not\s+found|pagina\s+non\s+trovata|page\s+introuvable|seite\s+nicht\s+gefunden|p[aá]gina\s+no\s+encontrada|page\s+does\s+not\s+exist)\b/i;
+
 export async function fetchPageSignals(url: string): Promise<PageSignals> {
   const res = await fetch(url, { headers: BROWSER_HEADERS, redirect: "follow" });
   const finalUrl = res.url || url;
@@ -258,6 +264,12 @@ export async function fetchPageSignals(url: string): Promise<PageSignals> {
   const $ = cheerio.load(html);
 
   const title = $("title").first().text().trim() || null;
+  if (title && SOFT_404_TITLE_RE.test(title)) {
+    // Soft 404: HTTP 200 but the page contains "not found" content.
+    // Throw the same error shape as a hard 404 so callers (extraction.ts) can
+    // skip the Tavily escalation — Tavily would receive the same dead content.
+    throw new Error(`Fetch failed with status 404 (soft 404: "${title.slice(0, 80)}")`);
+  }
   const metaDescription =
     $('meta[name="description"]').attr("content")?.trim() ||
     $('meta[property="og:description"]').attr("content")?.trim() ||

@@ -74,6 +74,11 @@ export async function crawlBrandCatalogue(
 
   const seen = new Set<string>();
   const productUrls: string[] = [];
+  // URLs confirmed live by appearing in an actual category page listing.
+  // These are always reachable, unlike some sitemap entries that point to
+  // discontinued/renamed product pages that now 404. Confirmed URLs are
+  // moved to the front of productUrls so ingestion tries them first.
+  const confirmedByNav = new Set<string>();
   let sitemapUsed = false;
   let collectionsCrawled = 0;
   let tavilyFallback = false;
@@ -100,7 +105,11 @@ export async function crawlBrandCatalogue(
   }
 
   // ── 2. HTML crawl: homepage → collection pages → products ──────────────────
-  if (productUrls.length < maxProducts) {
+  // Always run this even when sitemap found products — collection pages only
+  // list live products, so a URL found here is confirmed reachable. We track
+  // those as confirmedByNav and sort them to the front before ingestion so
+  // dead/stale sitemap entries (which 404) don't eat the per-run ingest cap.
+  {
     // Seed collection candidates from homepage HTML + sitemap collection URLs
     const collectionCandidates = new Set<string>();
 
@@ -128,6 +137,7 @@ export async function crawlBrandCatalogue(
 
       let added = 0;
       for (const u of discoverProductLinks(signals, 20)) {
+        confirmedByNav.add(u); // mark as live regardless of whether it's new
         if (addUrl(u)) added++;
       }
 
@@ -140,6 +150,7 @@ export async function crawlBrandCatalogue(
           if (!subSignals) continue;
           collectionsCrawled++;
           for (const u of discoverProductLinks(subSignals, 20)) {
+            confirmedByNav.add(u);
             if (addUrl(u)) added++;
           }
         }
@@ -153,6 +164,14 @@ export async function crawlBrandCatalogue(
         }
       }
     });
+
+    // Promote nav-confirmed URLs to the front so ingestion tries live pages first.
+    // Sitemap-only URLs (which may 404) go after the confirmed batch.
+    if (confirmedByNav.size > 0) {
+      const confirmed = productUrls.filter((u) => confirmedByNav.has(u));
+      const unconfirmed = productUrls.filter((u) => !confirmedByNav.has(u));
+      productUrls.splice(0, productUrls.length, ...confirmed, ...unconfirmed);
+    }
   }
 
   // ── 3. Tavily fallback for JS-rendered / CDN-blocked catalogues ───────────
