@@ -198,44 +198,75 @@ export function buildChatTools(ctx: ToolCtx) {
           .describe("The brand's display name, e.g. Pianca"),
       }),
       execute: async ({ brandUrl, brandName }) => {
-        const summary = await processBulkUrls(ctx.projectId, [brandUrl]).catch((err) => ({
-          total: 1,
-          results: [],
-          counts: {
-            productsAdded: 0,
-            discoveredProductsAdded: 0,
-            brandsCreated: 0,
-            brandsMatched: 0,
-            manufacturersSaved: 0,
-            inspirationSaved: 0,
-            duplicates: 0,
-            failed: 1,
-          },
-          error: (err as Error).message,
-        }));
+        // Auto-continue until all products are ingested or we hit the safety cap.
+        // Each run processes up to 50 products; runs repeat within the same request
+        // as long as the pipeline reports pendingProducts > 0.
+        // Safety cap: at most 5 runs (250 products max per chat message; a brand with
+        // 300+ products is unusual and the user can re-submit to continue further).
+        const MAX_AUTO_RUNS = 5;
+        let totalAdded = 0;
+        let totalDupes = 0;
+        let totalFailed = 0;
+        const allNewProducts: Product[] = [];
+        let pendingProducts = 1; // start > 0 to enter the loop
+        let runCount = 0;
 
-        const added = summary.counts.productsAdded + summary.counts.discoveredProductsAdded;
-        const newProducts: Product[] = [];
-        for (const r of summary.results) {
-          if (r.product) newProducts.push(r.product);
-          for (const d of r.discovered ?? []) {
-            if (d.product) newProducts.push(d.product);
+        while (pendingProducts > 0 && runCount < MAX_AUTO_RUNS) {
+          runCount++;
+          const summary = await processBulkUrls(ctx.projectId, [brandUrl]).catch((err) => ({
+            total: 1,
+            results: [],
+            counts: {
+              productsAdded: 0,
+              discoveredProductsAdded: 0,
+              brandsCreated: 0,
+              brandsMatched: 0,
+              manufacturersSaved: 0,
+              inspirationSaved: 0,
+              duplicates: 0,
+              failed: 1,
+            },
+            error: (err as Error).message,
+          }));
+
+          const batchAdded = summary.counts.productsAdded + summary.counts.discoveredProductsAdded;
+          totalAdded += batchAdded;
+          totalDupes += summary.counts.duplicates;
+          totalFailed += summary.counts.failed;
+
+          for (const r of summary.results) {
+            if (r.product) allNewProducts.push(r.product);
+            for (const d of r.discovered ?? []) {
+              if (d.product) allNewProducts.push(d.product);
+            }
           }
+
+          // Check if the pipeline says there are still products remaining
+          const brandResult = summary.results.find((r) => r.kind === "brand");
+          pendingProducts = brandResult?.pendingProducts ?? 0;
+
+          // If this run added nothing new (all dupes/failures), stop to avoid an
+          // infinite loop on a brand whose remaining URLs all permanently fail.
+          if (batchAdded === 0 && summary.counts.duplicates === 0) break;
         }
-        pushShown(ctx, newProducts);
+
+        pushShown(ctx, allNewProducts);
 
         return {
           brand: brandName,
-          discovered: added + summary.counts.duplicates,
-          added,
-          duplicates: summary.counts.duplicates,
-          failed: summary.counts.failed,
+          discovered: totalAdded + totalDupes,
+          added: totalAdded,
+          duplicates: totalDupes,
+          failed: totalFailed,
+          runs: runCount,
           note:
-            added === 0 && summary.counts.failed > 0
+            totalAdded === 0 && totalFailed > 0
               ? `Could not extract products from ${brandName}. The site may render its catalogue dynamically (JS-only). Try pasting individual product page URLs directly.`
-              : added === 0 && summary.counts.duplicates > 0
+              : totalAdded === 0 && totalDupes > 0
                 ? `All discovered ${brandName} products are already in your catalogue.`
-                : undefined,
+                : pendingProducts > 0
+                  ? `Imported ${totalAdded} products so far. ${pendingProducts} more remain — re-submit to continue.`
+                  : undefined,
         };
       },
     }),

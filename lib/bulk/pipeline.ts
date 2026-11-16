@@ -34,6 +34,9 @@ export interface BulkUrlResult {
   /** True only when `brandId` was newly created by this call — false for a matched/existing brand. */
   brandCreated?: boolean;
   discovered?: BulkUrlResult[];
+  /** Number of product URLs still pending after this run's ingest cap was reached.
+   *  Callers can re-submit the same brand URL to continue until this reaches 0. */
+  pendingProducts?: number;
 }
 
 export interface BulkIngestSummary {
@@ -390,6 +393,10 @@ async function processOneUrl(
           ? ` Catalogue may have more — run again to continue.`
           : "";
 
+      // How many URLs still need ingesting after this run's cap.
+      // The caller (tools.ts) uses this to decide whether to continue automatically.
+      const pendingProducts = Math.max(0, remaining.length - BRAND_MAX_INGEST);
+
       return {
         url,
         kind,
@@ -402,6 +409,7 @@ async function processOneUrl(
         brandId: resolvedBrand?.id ?? null,
         brandCreated: resolvedBrand?.created,
         discovered: discovered.length > 0 ? discovered : undefined,
+        pendingProducts,
       };
     }
 
