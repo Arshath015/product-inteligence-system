@@ -55,6 +55,7 @@ const CONCURRENCY = 4;
 const FETCH_TIMEOUT_MS = 15_000;
 const COLLECTION_DISCOVERY_LIMIT = 20;
 const BRAND_MAX_PRODUCTS = 250;
+const BRAND_MAX_INGEST = 50;  // per-run ingestion cap so we stay within Vercel's 300s timeout
 const BRAND_MAX_COLLECTIONS = 30;
 
 async function runPool<T, R>(items: T[], limit: number, worker: (item: T) => Promise<R>): Promise<R[]> {
@@ -287,8 +288,9 @@ async function processOneUrl(
         { maxProducts: BRAND_MAX_PRODUCTS, maxCollections: BRAND_MAX_COLLECTIONS },
       );
 
-      const discovered = crawl.productUrls.length > 0
-        ? await processDiscovered(projectId, crawl.productUrls, resolvedBrand?.id)
+      const toIngest = crawl.productUrls.slice(0, BRAND_MAX_INGEST);
+      const discovered = toIngest.length > 0
+        ? await processDiscovered(projectId, toIngest, resolvedBrand?.id)
         : [];
 
       const added = discovered.filter((d) => d.status === "product_created").length;
@@ -304,7 +306,9 @@ async function processOneUrl(
             : "";
 
       const cappedNote =
-        crawl.productUrls.length >= BRAND_MAX_PRODUCTS
+        crawl.productUrls.length > BRAND_MAX_INGEST
+          ? ` Found ${crawl.productUrls.length} product URLs total — imported first ${BRAND_MAX_INGEST}. Re-run to continue.`
+          : crawl.productUrls.length >= BRAND_MAX_PRODUCTS
           ? ` Catalogue may have more — run again to continue.`
           : "";
 
