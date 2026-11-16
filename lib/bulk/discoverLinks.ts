@@ -246,11 +246,12 @@ export async function discoverFromSitemap(
     const byLang = langPat ? subs.filter((s) => langPat.test(s.replace(/^https?:\/\/[^/]+/, ""))) : [];
     if (byLang.length > 0) {
       // Among language matches, prefer product-named ones
-      const prodMatch = byLang.filter((s) => /product|item|catalog|catalogue|prodotti/i.test(s));
+      const prodMatch = byLang.filter((s) => /product|\bitem\b|catalog|catalogue|prodotti/i.test(s));
       return prodMatch.length > 0 ? prodMatch.slice(0, 3) : byLang.slice(0, 3);
     }
     // No language match — prefer product-named, else first 2
-    const prodSubs = subs.filter((s) => /product|item|catalog|catalogue|prodotti/i.test(s));
+    // NOTE: use \bitem\b so "sitemap" (which contains "item") doesn't match every sub-sitemap.
+    const prodSubs = subs.filter((s) => /product|\bitem\b|catalog|catalogue|prodotti/i.test(s));
     return prodSubs.length > 0 ? prodSubs.slice(0, 3) : subs.slice(0, 2);
   }
 
