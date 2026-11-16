@@ -95,6 +95,26 @@ function sameHost(a: string, b: string): boolean {
 export function classifyFromSignals(url: string, signals: PageSignals | null): ContentKind {
   const fromPath = classifyFromPath(url);
   if (fromPath) return fromPath;
+
+  // URL-shape brand detection runs even when signals are null (e.g. 404 homepage
+  // that still has a valid sitemap at the domain root). A bare domain or a path
+  // that is only a 2-letter language code (/en/, /it/ …) is always a brand homepage.
+  const urlSegs = (() => {
+    try {
+      return new URL(signals?.finalUrl ?? url).pathname.split("/").filter(Boolean);
+    } catch {
+      return [];
+    }
+  })();
+  const isLangOnlyPath = urlSegs.length === 1 && /^[a-z]{2}(-[a-z]{2})?$/.test(urlSegs[0]);
+  if (urlSegs.length === 0 || isLangOnlyPath) {
+    // A bare domain or /lang/ homepage is always a brand — gallery keywords in
+    // the homepage text (e.g. "curated", "exhibition") are too common on brand
+    // sites to be a reliable signal here. Gallery detection only applies to deeper
+    // paths where the full context is unambiguously a curation/gallery page.
+    return "brand";
+  }
+
   if (!signals) return "general";
 
   if (signals.jsonLdTypes.includes("Product")) return "product";
@@ -115,18 +135,6 @@ export function classifyFromSignals(url: string, signals: PageSignals | null): C
       })
     );
     return distinctPaths.size > 15 ? "artisan_directory" : "artisan_profile";
-  }
-
-  const urlSegs = (() => {
-    try {
-      return new URL(signals.finalUrl).pathname.split("/").filter(Boolean);
-    } catch {
-      return [];
-    }
-  })();
-  if (urlSegs.length === 0) {
-    const galleryHits = GALLERY_KEYWORDS.filter((w) => text.includes(w)).length;
-    return galleryHits > 0 ? "gallery" : "brand";
   }
 
   if (/add to (cart|bag)|buy now|in stock|price/i.test(text) && signals.title) return "product";
