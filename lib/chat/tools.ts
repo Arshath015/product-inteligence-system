@@ -7,6 +7,7 @@ import { saveInspirationUrl } from "@/lib/inspiration";
 import { classifyUrl } from "@/lib/linkRouter";
 import { tavilySearch } from "@/lib/tavily";
 import { searchMemory } from "@/lib/chat/memory";
+import { processBulkUrls } from "@/lib/bulk/pipeline";
 import type { Inspiration, Product } from "@/lib/types";
 
 export interface ToolCtx {
@@ -182,6 +183,60 @@ export function buildChatTools(ctx: ToolCtx) {
       execute: async ({ query }) => {
         const result = await searchMemory(ctx.projectId, query, ctx.conversationId);
         return result;
+      },
+    }),
+
+    add_brand_catalogue: tool({
+      description:
+        "Import ALL products from a brand's website into the active project catalogue. Use when the user asks to 'add all products from [brand]', 'import [brand] catalogue', or 'get everything from [brand].com'. Crawls the brand site across all collection and category pages, discovers individual product URLs, and imports them in bulk. Handles Italian, French, German and Spanish URL structures. Reports exactly how many were discovered, added, duplicate, and failed.",
+      inputSchema: z.object({
+        brandUrl: z
+          .string()
+          .describe("The brand's homepage or main website URL, e.g. https://pianca.com"),
+        brandName: z
+          .string()
+          .describe("The brand's display name, e.g. Pianca"),
+      }),
+      execute: async ({ brandUrl, brandName }) => {
+        const summary = await processBulkUrls(ctx.projectId, [brandUrl]).catch((err) => ({
+          total: 1,
+          results: [],
+          counts: {
+            productsAdded: 0,
+            discoveredProductsAdded: 0,
+            brandsCreated: 0,
+            brandsMatched: 0,
+            manufacturersSaved: 0,
+            inspirationSaved: 0,
+            duplicates: 0,
+            failed: 1,
+          },
+          error: (err as Error).message,
+        }));
+
+        const added = summary.counts.productsAdded + summary.counts.discoveredProductsAdded;
+        const newProducts: Product[] = [];
+        for (const r of summary.results) {
+          if (r.product) newProducts.push(r.product);
+          for (const d of r.discovered ?? []) {
+            if (d.product) newProducts.push(d.product);
+          }
+        }
+        pushShown(ctx, newProducts);
+
+        return {
+          brand: brandName,
+          discovered: added + summary.counts.duplicates,
+          added,
+          duplicates: summary.counts.duplicates,
+          failed: summary.counts.failed,
+          note:
+            added === 0 && summary.counts.failed > 0
+              ? `Could not extract products from ${brandName}. The site may render its catalogue dynamically (JS-only). Try pasting individual product page URLs directly.`
+              : added === 0 && summary.counts.duplicates > 0
+                ? `All discovered ${brandName} products are already in your catalogue.`
+                : undefined,
+        };
       },
     }),
   };

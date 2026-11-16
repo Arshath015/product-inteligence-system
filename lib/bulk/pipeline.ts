@@ -2,6 +2,7 @@ import { getSupabaseAdmin } from "@/lib/supabase/server";
 import { fetchPageSignals, type PageSignals } from "@/lib/pageSignals";
 import { classifyFromPath, classifyFromSignals, type ContentKind } from "@/lib/bulk/classify";
 import { discoverProductLinks } from "@/lib/bulk/discoverLinks";
+import { crawlBrandCatalogue } from "@/lib/bulk/brandCrawl";
 import { ingestProductUrl } from "@/lib/ingest";
 import { saveInspirationUrl } from "@/lib/inspiration";
 import { resolveBrandDetailed } from "@/lib/catalog";
@@ -52,7 +53,9 @@ export interface BulkIngestSummary {
 
 const CONCURRENCY = 4;
 const FETCH_TIMEOUT_MS = 15_000;
-const DISCOVERY_LIMIT = 4;
+const COLLECTION_DISCOVERY_LIMIT = 20;
+const BRAND_MAX_PRODUCTS = 60;
+const BRAND_MAX_COLLECTIONS = 15;
 
 async function runPool<T, R>(items: T[], limit: number, worker: (item: T) => Promise<R>): Promise<R[]> {
   const results: R[] = new Array(items.length);
@@ -109,7 +112,7 @@ async function discoverViaSearch(url: string): Promise<string[]> {
   const host = hostOf(url);
   if (!host) return [];
   try {
-    const { results } = await tavilySearch(`site:${host} product`, { maxResults: DISCOVERY_LIMIT, includeImages: false });
+    const { results } = await tavilySearch(`site:${host} product`, { maxResults: 15, includeImages: false });
     return results.map((r) => r.url).filter((u) => u !== url && hostOf(u) === host);
   } catch {
     return [];
@@ -225,7 +228,7 @@ async function processOneUrl(
 
     case "collection":
     case "gallery": {
-      let discoveredUrls = signals ? discoverProductLinks(signals, DISCOVERY_LIMIT) : [];
+      let discoveredUrls = signals ? discoverProductLinks(signals, COLLECTION_DISCOVERY_LIMIT) : [];
       if (discoveredUrls.length === 0) {
         onPhase?.(`No product links found directly on ${host} — searching for its products…`);
         discoveredUrls = await discoverViaSearch(url);
@@ -234,12 +237,6 @@ async function processOneUrl(
         const discovered = await processDiscovered(projectId, discoveredUrls);
         const added = discovered.filter((d) => d.status === "product_created").length;
         const matched = discovered.filter((d) => d.status === "product_duplicate").length;
-        // Only treat this as a successful collection/gallery pass if at
-        // least one discovered link actually turned out to be a real
-        // product — a Tavily site-search that only surfaces non-product
-        // pages (about, shipping, etc.) must still fall through to the
-        // directory-entry save below, not leave this URL with nothing
-        // saved at all.
         if (added + matched > 0) {
           return {
             url,
@@ -281,16 +278,44 @@ async function processOneUrl(
           .eq("id", resolvedBrand.id)
           .is("description", null);
       }
-      let discoveredUrls = discoverProductLinks(signals, DISCOVERY_LIMIT);
-      if (discoveredUrls.length === 0) discoveredUrls = await discoverViaSearch(url);
-      const discovered = discoveredUrls.length > 0 ? await processDiscovered(projectId, discoveredUrls) : [];
+
+      onPhase?.(`Discovering ${brandName} product catalogue across all collection pages…`);
+      const crawl = await crawlBrandCatalogue(
+        url,
+        signals,
+        (msg) => onPhase?.(msg),
+        { maxProducts: BRAND_MAX_PRODUCTS, maxCollections: BRAND_MAX_COLLECTIONS },
+      );
+
+      const discovered = crawl.productUrls.length > 0
+        ? await processDiscovered(projectId, crawl.productUrls)
+        : [];
+
       const added = discovered.filter((d) => d.status === "product_created").length;
+      const dupes = discovered.filter((d) => d.status === "product_duplicate").length;
+      const failed = discovered.filter((d) => d.status === "failed").length;
+
+      const methodNote = crawl.stats.sitemapUsed
+        ? " via sitemap"
+        : crawl.stats.collectionsCrawled > 0
+          ? ` crawling ${crawl.stats.collectionsCrawled} collection page(s)`
+          : crawl.stats.tavilyFallback
+            ? " via search fallback"
+            : "";
+
+      const cappedNote =
+        crawl.productUrls.length >= BRAND_MAX_PRODUCTS
+          ? ` Catalogue may have more — run again to continue.`
+          : "";
+
       return {
         url,
         kind,
         status: resolvedBrand ? "brand_saved" : "failed",
         message: resolvedBrand
-          ? `Identified brand "${brandName}"${added > 0 ? ` and added ${added} product(s) from their site.` : "."}`
+          ? `Identified brand "${brandName}"${methodNote ? ` (${methodNote.trim()})` : ""}. ` +
+            `Discovered ${crawl.stats.totalDiscovered} product URL(s) — ` +
+            `added ${added}, ${dupes} duplicate(s), ${failed} failed.${cappedNote}`
           : `Couldn't resolve a brand from that page.`,
         brandId: resolvedBrand?.id ?? null,
         brandCreated: resolvedBrand?.created,
