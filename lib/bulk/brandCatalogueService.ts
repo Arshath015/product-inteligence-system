@@ -190,16 +190,22 @@ export async function extractBrandCatalogue(
       return;
     }
 
-    onEvent({ type: "phase", phase: "pre_screening", message: `Pre-screening ${toExtract.length} URLs…` });
+    // Cap per-call work so we fit within Vercel's 300s timeout.
+    // Auto-resume (client-side) handles remaining URLs in subsequent calls.
+    const MAX_PER_CALL = 20;
+    const candidates = toExtract.slice(0, MAX_PER_CALL * 3); // screen 3× buffer to find 20 live
+
+    onEvent({ type: "phase", phase: "pre_screening", message: `Pre-screening ${candidates.length} URLs…` });
 
     // Filter out dead pages — low concurrency to avoid triggering rate limits
     const alive: string[] = [];
-    await runPool(toExtract, 6, async (url) => {
-      if (await isAlive(url)) alive.push(url);
+    await runPool(candidates, 5, async (url) => {
+      if (alive.length < MAX_PER_CALL && await isAlive(url)) alive.push(url);
     });
-    const deadCount = toExtract.length - alive.length;
+    const thisBatch = alive.slice(0, MAX_PER_CALL);
+    const deadCount = candidates.length - alive.length;
 
-    onEvent({ type: "phase", phase: "extracting", message: `Extracting ${alive.length} products…` });
+    onEvent({ type: "phase", phase: "extracting", message: `Extracting ${thisBatch.length} products…` });
 
     let extracted = streamedCount;
     let failed = deadCount;
@@ -210,12 +216,12 @@ export async function extractBrandCatalogue(
     const catBySlug = new Map((cats ?? []).map((c) => [c.slug as string, c.id as string]));
     const catByName = new Map((cats ?? []).map((c) => [(c.name as string).toLowerCase(), c.id as string]));
 
-    await runPool(alive, 4, async (url) => {
+    await runPool(thisBatch, 2, async (url) => {
       try {
         const data: ExtractedProductData = await Promise.race([
           extractProductFromUrl(url),
           new Promise<never>((_, reject) =>
-            setTimeout(() => reject(new Error("extraction timeout")), 25000)
+            setTimeout(() => reject(new Error("extraction timeout")), 18000)
           ),
         ]);
         if (!data.name.trim()) {
