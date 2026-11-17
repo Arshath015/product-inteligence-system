@@ -31,7 +31,7 @@ export type ExtractProgressEvent =
   | { type: "discovered"; total: number; brandId: string; brandName: string }
   | { type: "product"; product: CatalogueProduct; extracted: number; total: number; failed: number }
   | { type: "skip"; url: string; extracted: number; total: number; failed: number }
-  | { type: "done"; extracted: number; total: number; failed: number; brandId: string }
+  | { type: "done"; extracted: number; total: number; failed: number; brandId: string; hasMore: boolean }
   | { type: "error"; message: string };
 
 // Titles that identify "not found" pages even when the server returns HTTP 200.
@@ -186,7 +186,7 @@ export async function extractBrandCatalogue(
     const toExtract = rawUrls.filter((u) => !alreadyDoneSet.has(u));
 
     if (toExtract.length === 0) {
-      onEvent({ type: "done", extracted: streamedCount, total: rawUrls.length, failed: 0, brandId: resolved.id });
+      onEvent({ type: "done", extracted: streamedCount, total: rawUrls.length, failed: 0, brandId: resolved.id, hasMore: false });
       return;
     }
 
@@ -277,7 +277,9 @@ export async function extractBrandCatalogue(
       }
     });
 
-    onEvent({ type: "done", extracted, total, failed, brandId: resolved.id });
+    // hasMore = true when candidates we didn't screen yet remain, or screened but uncapped live ones exist
+    const hasMore = toExtract.length > candidates.length || alive.length > MAX_PER_CALL;
+    onEvent({ type: "done", extracted, total, failed, brandId: resolved.id, hasMore });
   } catch (err) {
     onEvent({ type: "error", message: (err as Error).message });
   }

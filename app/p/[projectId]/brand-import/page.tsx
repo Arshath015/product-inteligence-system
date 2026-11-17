@@ -131,16 +131,26 @@ export default function BrandImportPage() {
         setProgress((p) => ({ ...p, extracted: event.extracted, failed: event.failed, total: event.total }));
         break;
       case "done":
-        setProgress((p) => ({
-          ...p, phase: "done", extracted: event.extracted, failed: event.failed,
-          total: event.total, brandId: event.brandId,
-          message: `${event.extracted} products extracted`,
-        }));
-        setBrandBuckets((prev) => {
-          const products = prev[event.brandId]?.products ?? [];
-          setSelected(new Set(products.filter((p) => !alreadyInProject.has(p.id)).map((p) => p.id)));
-          return prev;
-        });
+        if (event.hasMore) {
+          // More batches remain — resume immediately without resetting UI
+          setTimeout(() => setResumeFlag((n) => n + 1), 400);
+          setProgress((p) => ({
+            ...p, phase: "extracting", extracted: event.extracted,
+            failed: event.failed, total: event.total,
+            message: `Extracted ${event.extracted} so far, continuing…`,
+          }));
+        } else {
+          setProgress((p) => ({
+            ...p, phase: "done", extracted: event.extracted, failed: event.failed,
+            total: event.total, brandId: event.brandId,
+            message: `${event.extracted} products extracted`,
+          }));
+          setBrandBuckets((prev) => {
+            const products = prev[event.brandId]?.products ?? [];
+            setSelected(new Set(products.filter((p) => !alreadyInProject.has(p.id)).map((p) => p.id)));
+            return prev;
+          });
+        }
         break;
       case "error":
         setProgress((p) => ({ ...p, phase: "error", message: event.message }));
