@@ -71,7 +71,7 @@ async function uniqueCatalogueSlug(brandId: string, base: string): Promise<strin
 async function isAlive(url: string): Promise<boolean> {
   try {
     const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), 4000);
+    const timer = setTimeout(() => ctrl.abort(), 2000);
     const res = await fetch(url, { headers: BROWSER_HEADERS, signal: ctrl.signal });
     clearTimeout(timer);
     if (!res.ok) return false;
@@ -193,19 +193,27 @@ export async function extractBrandCatalogue(
     // Cap per-call work so we fit within Vercel's 300s timeout.
     // Auto-resume (client-side) handles remaining URLs in subsequent calls.
     const MAX_PER_CALL = 20;
-    const candidates = toExtract.slice(0, MAX_PER_CALL * 3); // screen 3× buffer to find 20 live
+    // On resume batches (some products already extracted) skip pre-screening —
+    // we've already identified dead URLs; extraction timeout handles any stragglers.
+    const isResumeBatch = streamedCount > 0;
+    let thisBatch: string[];
+    let deadCount: number;
 
-    onEvent({ type: "phase", phase: "pre_screening", message: `Pre-screening ${candidates.length} URLs…` });
-
-    // Filter out dead pages — low concurrency to avoid triggering rate limits
-    const alive: string[] = [];
-    await runPool(candidates, 5, async (url) => {
-      if (alive.length < MAX_PER_CALL && await isAlive(url)) alive.push(url);
-    });
-    const thisBatch = alive.slice(0, MAX_PER_CALL);
-    const deadCount = candidates.length - alive.length;
-
-    onEvent({ type: "phase", phase: "extracting", message: `Extracting ${thisBatch.length} products…` });
+    if (isResumeBatch) {
+      thisBatch = toExtract.slice(0, MAX_PER_CALL);
+      deadCount = 0;
+      onEvent({ type: "phase", phase: "extracting", message: `Extracting next ${thisBatch.length} products…` });
+    } else {
+      const candidates = toExtract.slice(0, MAX_PER_CALL * 2); // screen 2× buffer (40) to find 20 live
+      onEvent({ type: "phase", phase: "pre_screening", message: `Pre-screening ${candidates.length} URLs…` });
+      const alive: string[] = [];
+      await runPool(candidates, 5, async (url) => {
+        if (alive.length < MAX_PER_CALL && await isAlive(url)) alive.push(url);
+      });
+      thisBatch = alive.slice(0, MAX_PER_CALL);
+      deadCount = candidates.length - alive.length;
+      onEvent({ type: "phase", phase: "extracting", message: `Extracting ${thisBatch.length} products…` });
+    }
 
     let extracted = streamedCount;
     let failed = deadCount;
@@ -216,7 +224,7 @@ export async function extractBrandCatalogue(
     const catBySlug = new Map((cats ?? []).map((c) => [c.slug as string, c.id as string]));
     const catByName = new Map((cats ?? []).map((c) => [(c.name as string).toLowerCase(), c.id as string]));
 
-    await runPool(thisBatch, 2, async (url) => {
+    await runPool(thisBatch, 3, async (url) => {
       try {
         const data: ExtractedProductData = await Promise.race([
           extractProductFromUrl(url),
@@ -277,8 +285,8 @@ export async function extractBrandCatalogue(
       }
     });
 
-    // hasMore = true when candidates we didn't screen yet remain, or screened but uncapped live ones exist
-    const hasMore = toExtract.length > candidates.length || alive.length > MAX_PER_CALL;
+    // hasMore = true when more unprocessed URLs remain beyond this batch
+    const hasMore = toExtract.length > MAX_PER_CALL;
     onEvent({ type: "done", extracted, total, failed, brandId: resolved.id, hasMore });
   } catch (err) {
     onEvent({ type: "error", message: (err as Error).message });
