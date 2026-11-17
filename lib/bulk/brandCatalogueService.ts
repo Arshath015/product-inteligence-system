@@ -152,7 +152,7 @@ export async function extractBrandCatalogue(
       brandUrl,
       homepageSignals,
       (msg) => onEvent({ type: "phase", phase: "discovering", message: msg }),
-      { maxProducts: 150, maxCollections: 30 }
+      { maxProducts: 300, maxCollections: 40 }
     );
 
     const rawUrls = crawl.productUrls;
