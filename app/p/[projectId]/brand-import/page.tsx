@@ -378,13 +378,26 @@ export default function BrandImportPage() {
           disabled={isRunning}
           className="min-w-0 flex-1 rounded-full border border-border bg-surface px-4 py-2.5 text-sm text-foreground placeholder:text-muted focus:border-accent/60 focus:outline-none disabled:opacity-50"
         />
-        <button
-          onClick={startExtraction}
-          disabled={isRunning || !url.trim()}
-          className="rounded-full bg-accent px-6 py-2.5 text-sm font-medium text-accent-foreground transition-colors hover:bg-accent-hover disabled:opacity-50"
-        >
-          {isRunning ? "Extracting…" : "Extract"}
-        </button>
+        {isRunning ? (
+          <button
+            onClick={() => {
+              readerRef.current?.cancel().catch(() => {});
+              readerRef.current = null;
+              setProgress((p) => ({ ...p, phase: "idle", message: "" }));
+            }}
+            className="rounded-full border border-border px-6 py-2.5 text-sm font-medium text-muted transition-colors hover:border-accent/50 hover:text-foreground"
+          >
+            Cancel
+          </button>
+        ) : (
+          <button
+            onClick={startExtraction}
+            disabled={!url.trim()}
+            className="rounded-full bg-accent px-6 py-2.5 text-sm font-medium text-accent-foreground transition-colors hover:bg-accent-hover disabled:opacity-50"
+          >
+            Extract
+          </button>
+        )}
       </div>
 
       {/* Progress */}
