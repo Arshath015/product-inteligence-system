@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { usePathname, useRouter } from "next/navigation";
+import { usePathname } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ChatProvider, useChat } from "@/components/chat/ChatContext";
 import { ChatPanel } from "@/components/chat/ChatPanel";
@@ -18,7 +18,6 @@ const COLLAPSED_KEY = "altossa-chat-collapsed";
 
 function Shell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
-  const router = useRouter();
   const { projectId, project } = useProject();
   const { selectedProduct, closeProduct, bumpCatalog } = useChat();
   const [mobileView, setMobileView] = useState<"catalogue" | "chat">("catalogue");
@@ -117,7 +116,7 @@ function Shell({ children }: { children: React.ReactNode }) {
         </div>
         <div className="flex items-center gap-2">
           <button
-            onClick={() => router.refresh()}
+            onClick={() => window.location.reload()}
             className="hidden h-8 w-8 items-center justify-center rounded-full border border-border text-muted transition-colors hover:border-accent/50 hover:text-foreground sm:flex"
             title="Refresh"
           >
