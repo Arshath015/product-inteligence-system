@@ -118,7 +118,9 @@ function ProgressBar({ progress }: { progress: ProgressState }) {
 
 export default function BrandImportPage() {
   const { projectId } = useProject();
-  const [url, setUrl] = useState("");
+  const [url, setUrl] = useState(() => {
+    try { return sessionStorage.getItem("brand-import-url") ?? ""; } catch { return ""; }
+  });
   const [products, setProducts] = useState<CatalogueProduct[]>([]);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [alreadyInProject, setAlreadyInProject] = useState<Set<string>>(new Set());
@@ -136,6 +138,10 @@ export default function BrandImportPage() {
   const [addResult, setAddResult] = useState<{ added: number; duplicates: number } | null>(null);
   const [resumeFlag, setResumeFlag] = useState(0);
   const readerRef = useRef<ReadableStreamDefaultReader<Uint8Array> | null>(null);
+
+  useEffect(() => {
+    try { sessionStorage.setItem("brand-import-url", url); } catch {}
+  }, [url]);
 
   // Auto-resume after a stream drop: re-fire extraction without resetting products.
   // The service skips already-extracted URLs so we pick up where we left off.
