@@ -185,7 +185,16 @@ export function ChatPanel() {
             title="Analyze an image"
             className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-full text-muted hover:bg-background disabled:opacity-50"
           >
-            {analyzing ? "…" : "📷"}
+            {analyzing ? (
+              <svg className="h-4 w-4 animate-pulse" viewBox="0 0 16 16" fill="none">
+                <circle cx="8" cy="8" r="6" stroke="currentColor" strokeWidth="1.5"/>
+              </svg>
+            ) : (
+              <svg className="h-4 w-4" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M1.5 5.5A1 1 0 0 1 2.5 4.5h1l1-2h7l1 2h1a1 1 0 0 1 1 1V12a1 1 0 0 1-1 1h-11a1 1 0 0 1-1-1V5.5Z"/>
+                <circle cx="8" cy="8.5" r="2"/>
+              </svg>
+            )}
           </button>
           <textarea
             ref={textareaRef}
