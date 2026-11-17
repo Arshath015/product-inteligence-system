@@ -99,6 +99,28 @@ export default function BrandImportPage() {
     try { sessionStorage.setItem("brand-import-url", url); } catch {}
   }, [url]);
 
+  // On mount: reload previously extracted brands from DB so navigating away
+  // and back doesn't wipe the product grid.
+  useEffect(() => {
+    fetch(`/api/brand-catalogue?projectId=${projectId}`)
+      .then((r) => r.json())
+      .then((data) => {
+        if (!Array.isArray(data.brands) || data.brands.length === 0) return;
+        setBrandBuckets((prev) => {
+          const next = { ...prev };
+          for (const b of data.brands) {
+            if (!next[b.id]) {
+              next[b.id] = { name: b.name, products: b.products };
+            }
+          }
+          return next;
+        });
+        setActiveBrandId((prev) => prev ?? data.brands[0]?.id ?? null);
+      })
+      .catch(() => {});
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const handleEvent = useCallback((event: ExtractProgressEvent) => {
     switch (event.type) {
       case "phase":

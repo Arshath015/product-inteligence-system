@@ -1,8 +1,44 @@
 import { NextRequest, NextResponse } from "next/server";
 import { extractBrandCatalogue } from "@/lib/bulk/brandCatalogueService";
 import type { ExtractProgressEvent } from "@/lib/bulk/brandCatalogueService";
+import { getSupabaseAdmin } from "@/lib/supabase/server";
 
 export const maxDuration = 300;
+
+export async function GET(req: NextRequest) {
+  const projectId = req.nextUrl.searchParams.get("projectId");
+  if (!projectId) return NextResponse.json({ error: "Missing projectId" }, { status: 400 });
+
+  const supabase = getSupabaseAdmin();
+
+  // All brands owned by this project that have catalogue products
+  const { data: brands } = await supabase
+    .from("brands")
+    .select("id, name")
+    .eq("project_id", projectId);
+
+  if (!brands || brands.length === 0) return NextResponse.json({ brands: [] });
+
+  const brandIds = brands.map((b) => b.id as string);
+
+  const { data: products } = await supabase
+    .from("brand_catalogue_products")
+    .select("*")
+    .in("brand_id", brandIds)
+    .order("name");
+
+  // Group by brand
+  const byBrand: Record<string, { id: string; name: string; products: unknown[] }> = {};
+  for (const b of brands) {
+    byBrand[b.id as string] = { id: b.id as string, name: b.name as string, products: [] };
+  }
+  for (const p of products ?? []) {
+    byBrand[p.brand_id as string]?.products.push(p);
+  }
+
+  const result = Object.values(byBrand).filter((b) => b.products.length > 0);
+  return NextResponse.json({ brands: result });
+}
 
 export async function POST(req: NextRequest) {
   const body = await req.json().catch(() => null);
