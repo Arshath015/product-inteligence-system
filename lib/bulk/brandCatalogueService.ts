@@ -152,7 +152,7 @@ export async function extractBrandCatalogue(
       brandUrl,
       homepageSignals,
       (msg) => onEvent({ type: "phase", phase: "discovering", message: msg }),
-      { maxProducts: 250, maxCollections: 30 }
+      { maxProducts: 150, maxCollections: 30 }
     );
 
     const rawUrls = crawl.productUrls;
@@ -192,9 +192,9 @@ export async function extractBrandCatalogue(
 
     onEvent({ type: "phase", phase: "pre_screening", message: `Pre-screening ${toExtract.length} URLs…` });
 
-    // Filter out dead pages
+    // Filter out dead pages — low concurrency to avoid triggering rate limits
     const alive: string[] = [];
-    await runPool(toExtract, 20, async (url) => {
+    await runPool(toExtract, 6, async (url) => {
       if (await isAlive(url)) alive.push(url);
     });
     const deadCount = toExtract.length - alive.length;
@@ -212,7 +212,12 @@ export async function extractBrandCatalogue(
 
     await runPool(alive, 4, async (url) => {
       try {
-        const data: ExtractedProductData = await extractProductFromUrl(url);
+        const data: ExtractedProductData = await Promise.race([
+          extractProductFromUrl(url),
+          new Promise<never>((_, reject) =>
+            setTimeout(() => reject(new Error("extraction timeout")), 25000)
+          ),
+        ]);
         if (!data.name.trim()) {
           failed++;
           onEvent({ type: "skip", url, extracted: ++extracted, total, failed });

@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useProject } from "@/components/project/ProjectContext";
 import type { CatalogueProduct, ExtractProgressEvent } from "@/lib/bulk/brandCatalogueService";
 
@@ -134,7 +134,50 @@ export default function BrandImportPage() {
   });
   const [adding, setAdding] = useState(false);
   const [addResult, setAddResult] = useState<{ added: number; duplicates: number } | null>(null);
+  const [resumeFlag, setResumeFlag] = useState(0);
   const readerRef = useRef<ReadableStreamDefaultReader<Uint8Array> | null>(null);
+
+  // Auto-resume after a stream drop: re-fire extraction without resetting products.
+  // The service skips already-extracted URLs so we pick up where we left off.
+  useEffect(() => {
+    if (resumeFlag === 0 || !url.trim()) return;
+    setProgress((p) => ({ ...p, phase: "extracting", message: "Resuming extraction…" }));
+    (async () => {
+      const res = await fetch("/api/brand-catalogue", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ brandUrl: url.trim(), projectId }),
+      });
+      if (!res.ok || !res.body) {
+        setProgress((p) => ({ ...p, phase: "error", message: "Resume failed." }));
+        return;
+      }
+      const reader = res.body.getReader();
+      readerRef.current = reader;
+      const decoder = new TextDecoder();
+      let buffer = "";
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n\n");
+        buffer = lines.pop() ?? "";
+        for (const chunk of lines) {
+          const dataLine = chunk.split("\n").find((l) => l.startsWith("data: "));
+          if (!dataLine) continue;
+          try { handleEvent(JSON.parse(dataLine.slice(6))); } catch { /* ignore */ }
+        }
+      }
+      // If still running after this resume stream closes, unlock again
+      setProgress((p) => {
+        if (p.phase === "discovering" || p.phase === "pre_screening" || p.phase === "extracting") {
+          return { ...p, phase: "idle", message: "" };
+        }
+        return p;
+      });
+    })();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [resumeFlag]);
 
   const startExtraction = useCallback(async () => {
     if (!url.trim()) return;
@@ -189,6 +232,29 @@ export default function BrandImportPage() {
         }
       }
     }
+
+    // Stream closed. If we're still in a running phase the function timed out
+    // or the connection dropped. Unlock the UI and auto-resume — the service
+    // skips already-extracted URLs so we continue from where we left off.
+    setProgress((p) => {
+      if (p.phase === "discovering" || p.phase === "pre_screening" || p.phase === "extracting") {
+        return { ...p, phase: "idle", message: "" };
+      }
+      return p;
+    });
+    // Auto-select whatever we have so far
+    setProducts((prev) => {
+      if (prev.length > 0) setSelected(new Set(prev.map((pr) => pr.id)));
+      return prev;
+    });
+    // Check if more products remain and auto-resume
+    setProgress((p) => {
+      if (p.phase === "idle" && p.extracted < p.total && p.total > 0) {
+        // Schedule resume on next tick so state has settled
+        setTimeout(() => setResumeFlag((n) => n + 1), 400);
+      }
+      return p;
+    });
   }, [url]);
 
   const handleEvent = useCallback((event: ExtractProgressEvent) => {
