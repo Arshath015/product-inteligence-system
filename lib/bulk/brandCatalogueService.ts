@@ -224,7 +224,7 @@ export async function extractBrandCatalogue(
     const catBySlug = new Map((cats ?? []).map((c) => [c.slug as string, c.id as string]));
     const catByName = new Map((cats ?? []).map((c) => [(c.name as string).toLowerCase(), c.id as string]));
 
-    await runPool(thisBatch, 3, async (url) => {
+    await runPool(thisBatch, 5, async (url) => {
       try {
         const data: ExtractedProductData = await Promise.race([
           extractProductFromUrl(url),

@@ -224,6 +224,17 @@ export default function BrandImportPage() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [resumeFlag]);
 
+  // Warn before reload/navigate-away while extraction is running
+  useEffect(() => {
+    const isRunningNow = ["discovering", "pre_screening", "extracting"].includes(progress.phase);
+    if (!isRunningNow) return;
+    const handler = (e: BeforeUnloadEvent) => {
+      e.preventDefault();
+    };
+    window.addEventListener("beforeunload", handler);
+    return () => window.removeEventListener("beforeunload", handler);
+  }, [progress.phase]);
+
   const startExtraction = useCallback(async () => {
     const trimmed = url.trim();
     if (!trimmed) return;

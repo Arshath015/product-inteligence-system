@@ -330,6 +330,49 @@ function productFromJsonLd(jsonLd: unknown[], baseUrl: string): JsonLdProduct | 
 }
 
 /**
+ * Fast path #2: parse product name + images from OG tags / page title without
+ * calling the model. Returns null if we can't derive a confident product name
+ * OR the page has no images at all.
+ */
+function productFromOgOrTitle(
+  signals: PageSignals,
+  finalUrl: string
+): { name: string; description: string | null; categoryHint: CategorySlug } | null {
+  if (signals.ogImages.length === 0 && signals.galleryImages.length === 0) return null;
+  const title = signals.title;
+  if (!title) return null;
+
+  // Strip site-name suffix: "ProductName - Brand" or "Brand | ProductName"
+  let name = title;
+  const sep = title.match(/^(.+?)\s*[|\-–—]\s*(.+)$/);
+  if (sep) {
+    const [, left, right] = sep;
+    const hostPart = (() => {
+      try { return new URL(finalUrl).hostname.replace(/^www\./, "").split(".")[0].toLowerCase(); } catch { return ""; }
+    })();
+    const leftKey = left.toLowerCase().replace(/\s+/g, "");
+    const rightKey = right.toLowerCase().replace(/\s+/g, "");
+    if (hostPart && leftKey.includes(hostPart)) name = right.trim();
+    else if (hostPart && rightKey.includes(hostPart)) name = left.trim();
+    else name = left.trim(); // default: left segment is usually the product
+  }
+
+  // Reject generic/non-product page names
+  if (
+    name.length < 2 || name.length > 80 ||
+    /^(home|homepage|products?|collections?|catalogue|catalog|page\s*not\s*found|404|shop|store|brand|about|contact)$/i.test(name.trim())
+  ) return null;
+
+  const description = signals.metaDescription ?? null;
+  const categoryHint = refineCategoryHint(
+    guessCategorySlug(name),
+    name,
+    [description, signals.textSnippet, finalUrl]
+  );
+  return { name, description, categoryHint };
+}
+
+/**
  * Pulls product signals from a URL. Tries a direct fetch first; if that
  * fails outright (network/DNS/HTTP error) or succeeds but yields no real
  * content (JS-only page, bot wall), escalates to Tavily's extraction
@@ -439,6 +482,48 @@ export async function extractProductFromUrl(
         canonicalUrl: signals.canonicalUrl ?? finalUrl,
         sourceDomain: host,
       };
+    }
+  }
+
+  // Fast path #2: OG tags / page title + gallery — fires when JSON-LD has no
+  // Product node (common on luxury brand WordPress sites like PIANCA). Avoids
+  // the Groq call entirely, eliminating rate-limit stalls.
+  if (signals) {
+    const fromOg = productFromOgOrTitle(signals, finalUrl);
+    if (fromOg) {
+      const host = hostOf(finalUrl);
+      const orgNames = extractOrgNames(signals.jsonLd);
+      const brandName =
+        signals.byline.brandName ??
+        siteIdentityFallback(signals.title, fromOg.name, orgNames);
+      const designerName = signals.byline.designerName ?? null;
+      const nameHints = Array.from(new Set([...buildNameHints(signals.title, finalUrl), ...tokensFrom(fromOg.name)]));
+      const brandTokens = brandName ? tokensFrom(brandName) : host ? tokensFrom(host) : [];
+      const ranked = rankImageCandidates(
+        [
+          { urls: signals.ogImages, tier: 0 },
+          { urls: galleryUrls(signals), tier: 1, productContainerUrls: galleryProductContainerUrls(signals) },
+        ],
+        nameHints,
+        brandTokens
+      );
+      if (ranked.length > 0) {
+        const imageUrls = ranked.slice(0, 10).map((c) => c.url);
+        return {
+          name: fromOg.name,
+          brandName,
+          designerName,
+          categoryHint: fromOg.categoryHint,
+          description: fromOg.description,
+          materials: null,
+          dimensions: null,
+          priceText: null,
+          imageUrls,
+          imagesLowConfidence: ranked[0].score < 8,
+          canonicalUrl: signals.canonicalUrl ?? finalUrl,
+          sourceDomain: host,
+        };
+      }
     }
   }
 
