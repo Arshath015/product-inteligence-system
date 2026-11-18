@@ -94,6 +94,9 @@ export default function BrandImportPage() {
   const [addResult, setAddResult] = useState<{ added: number; duplicates: number } | null>(null);
   const [resumeFlag, setResumeFlag] = useState(0);
   const readerRef = useRef<ReadableStreamDefaultReader<Uint8Array> | null>(null);
+  // Set to true when a "done+hasMore" event has already scheduled the next
+  // batch — prevents the stream-closure fallback from firing a duplicate resume.
+  const hasMorePendingRef = useRef(false);
 
   useEffect(() => {
     try { sessionStorage.setItem("brand-import-url", url); } catch {}
@@ -154,8 +157,13 @@ export default function BrandImportPage() {
         break;
       case "done":
         if (event.hasMore) {
-          // More batches remain — resume immediately without resetting UI
-          setTimeout(() => setResumeFlag((n) => n + 1), 400);
+          // More batches remain — resume without resetting UI.
+          // Set the flag so stream-closure fallback doesn't fire a duplicate.
+          hasMorePendingRef.current = true;
+          setTimeout(() => {
+            hasMorePendingRef.current = false;
+            setResumeFlag((n) => n + 1);
+          }, 400);
           setProgress((p) => ({
             ...p, phase: "extracting", extracted: event.extracted,
             failed: event.failed, total: event.total,
@@ -206,9 +214,13 @@ export default function BrandImportPage() {
         try { handleEvent(JSON.parse(dataLine.slice(6))); } catch { /* ignore */ }
       }
     }
-    // Stream closed — if still running, unlock UI and auto-resume
+    // Stream closed — if still running AND no hasMore resume is already
+    // pending, treat as an unexpected drop and auto-resume.
     setProgress((p) => {
-      if (p.phase === "discovering" || p.phase === "pre_screening" || p.phase === "extracting") {
+      if (
+        !hasMorePendingRef.current &&
+        (p.phase === "discovering" || p.phase === "pre_screening" || p.phase === "extracting")
+      ) {
         setTimeout(() => setResumeFlag((n) => n + 1), 300);
         return { ...p, phase: "idle", message: "" };
       }
