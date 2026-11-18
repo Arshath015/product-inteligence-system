@@ -230,6 +230,7 @@ export default function BrandImportPage() {
     if (!isRunningNow) return;
     const handler = (e: BeforeUnloadEvent) => {
       e.preventDefault();
+      e.returnValue = ""; // required by Chrome/Edge to show the dialog
     };
     window.addEventListener("beforeunload", handler);
     return () => window.removeEventListener("beforeunload", handler);
