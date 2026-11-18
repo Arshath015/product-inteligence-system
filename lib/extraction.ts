@@ -342,19 +342,30 @@ function productFromOgOrTitle(
   const title = signals.title;
   if (!title) return null;
 
-  // Strip site-name suffix: "ProductName - Brand" or "Brand | ProductName"
+  // Strip site-name suffix: "ProductName - Brand", "Brand | ProductName",
+  // or "ProductName, type, Brand" (comma-separated with brand as last token)
   let name = title;
+  const hostPart = (() => {
+    try { return new URL(finalUrl).hostname.replace(/^www\./, "").split(".")[0].toLowerCase(); } catch { return ""; }
+  })();
+
+  // Try dash/pipe separator first
   const sep = title.match(/^(.+?)\s*[|\-–—]\s*(.+)$/);
   if (sep) {
     const [, left, right] = sep;
-    const hostPart = (() => {
-      try { return new URL(finalUrl).hostname.replace(/^www\./, "").split(".")[0].toLowerCase(); } catch { return ""; }
-    })();
     const leftKey = left.toLowerCase().replace(/\s+/g, "");
     const rightKey = right.toLowerCase().replace(/\s+/g, "");
     if (hostPart && leftKey.includes(hostPart)) name = right.trim();
     else if (hostPart && rightKey.includes(hostPart)) name = left.trim();
-    else name = left.trim(); // default: left segment is usually the product
+    else name = left.trim();
+  } else if (hostPart && title.toLowerCase().includes(`,`) ) {
+    // Comma-separated: "Ala, desk, Pianca" — if last token matches host, strip it
+    // and take the first token as the product name
+    const parts = title.split(",").map(s => s.trim()).filter(Boolean);
+    const lastPart = parts[parts.length - 1]?.toLowerCase().replace(/\s+/g, "");
+    if (lastPart && hostPart && lastPart.includes(hostPart)) {
+      name = parts[0].trim(); // "Ala" from "Ala, desk, Pianca"
+    }
   }
 
   // Reject generic/non-product page names
