@@ -28,7 +28,7 @@ export interface CatalogueProduct {
 
 export type ExtractProgressEvent =
   | { type: "phase"; phase: "discovering" | "pre_screening" | "extracting" | "done"; message: string }
-  | { type: "discovered"; total: number; brandId: string; brandName: string }
+  | { type: "discovered"; total: number; brandId: string; brandName: string; alreadyExtracted: number }
   | { type: "product"; product: CatalogueProduct; extracted: number; total: number; failed: number }
   | { type: "skip"; url: string; extracted: number; total: number; failed: number }
   | { type: "done"; extracted: number; total: number; failed: number; brandId: string; hasMore: boolean }
@@ -117,7 +117,15 @@ async function resolveBrandForCatalogue(
 export async function extractBrandCatalogue(
   projectId: string,
   brandUrl: string,
-  onEvent: (event: ExtractProgressEvent) => void
+  onEvent: (event: ExtractProgressEvent) => void,
+  options?: {
+    /**
+     * True when this is a client-triggered auto-resume (not the first call).
+     * On resume the client already has all previously extracted products in state,
+     * so we skip re-streaming them and start the counter from where it left off.
+     */
+    isResume?: boolean;
+  }
 ): Promise<void> {
   const supabase = getSupabaseAdmin();
 
@@ -161,8 +169,6 @@ export async function extractBrandCatalogue(
       return;
     }
 
-    onEvent({ type: "discovered", total: rawUrls.length, brandId: resolved.id, brandName: resolved.name });
-
     // Filter out URLs already extracted
     const { data: existing } = await supabase
       .from("brand_catalogue_products")
@@ -170,17 +176,26 @@ export async function extractBrandCatalogue(
       .eq("brand_id", resolved.id)
       .in("source_url", rawUrls);
     const alreadyDoneSet = new Set((existing ?? []).map((r) => r.source_url as string));
+    const existingCount = (existing ?? []).length;
 
-    // Stream already-known products back immediately
+    onEvent({ type: "discovered", total: rawUrls.length, brandId: resolved.id, brandName: resolved.name, alreadyExtracted: existingCount });
+
+    // On first call: stream already-known products so the client can populate its grid.
+    // On resume: client already has them — skip re-streaming to avoid counter confusion.
     let streamedCount = 0;
-    for (const p of existing ?? []) {
-      onEvent({
-        type: "product",
-        product: p as unknown as CatalogueProduct,
-        extracted: ++streamedCount,
-        total: rawUrls.length,
-        failed: 0,
-      });
+    if (!options?.isResume) {
+      for (const p of existing ?? []) {
+        onEvent({
+          type: "product",
+          product: p as unknown as CatalogueProduct,
+          extracted: ++streamedCount,
+          total: rawUrls.length,
+          failed: 0,
+        });
+      }
+    } else {
+      // Resume: start counter from where the previous batch ended
+      streamedCount = existingCount;
     }
 
     const toExtract = rawUrls.filter((u) => !alreadyDoneSet.has(u));

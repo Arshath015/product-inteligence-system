@@ -102,9 +102,10 @@ export default function BrandImportPage() {
     try { sessionStorage.setItem("brand-import-url", url); } catch {}
   }, [url]);
 
-  // On mount: reload previously extracted brands from DB so navigating away
-  // and back doesn't wipe the product grid.
+  // On mount: reload previously extracted brands from DB, then auto-resume
+  // any extraction that was interrupted (e.g. user navigated away mid-run).
   useEffect(() => {
+    const savedUrl = (() => { try { return sessionStorage.getItem("brand-import-url") ?? ""; } catch { return ""; } })();
     fetch(`/api/brand-catalogue?projectId=${projectId}`)
       .then((r) => r.json())
       .then((data) => {
@@ -119,6 +120,14 @@ export default function BrandImportPage() {
           return next;
         });
         setActiveBrandId((prev) => prev ?? data.brands[0]?.id ?? null);
+
+        // Auto-resume if extraction was interrupted (flag stored in sessionStorage)
+        const wasRunning = (() => { try { return sessionStorage.getItem("brand-import-running") === projectId; } catch { return false; } })();
+        if (wasRunning && savedUrl) {
+          try { sessionStorage.removeItem("brand-import-running"); } catch {}
+          setProgress((p) => ({ ...p, phase: "extracting", message: "Resuming interrupted extraction…" }));
+          setResumeFlag(1);
+        }
       })
       .catch(() => {});
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -136,7 +145,10 @@ export default function BrandImportPage() {
           [event.brandId]: { name: event.brandName, products: prev[event.brandId]?.products ?? [] },
         }));
         setProgress((p) => ({
-          ...p, phase: "extracting", total: event.total,
+          ...p, phase: "extracting",
+          // On resume keep existing extracted count; on first call reset
+          extracted: event.alreadyExtracted > 0 ? event.alreadyExtracted : p.extracted,
+          total: event.total,
           brandId: event.brandId, brandName: event.brandName,
           message: `Found ${event.total} products on ${event.brandName}`,
         }));
@@ -170,6 +182,7 @@ export default function BrandImportPage() {
             message: `Extracted ${event.extracted} so far, continuing…`,
           }));
         } else {
+          try { sessionStorage.removeItem("brand-import-running"); } catch {}
           setProgress((p) => ({
             ...p, phase: "done", extracted: event.extracted, failed: event.failed,
             total: event.total, brandId: event.brandId,
@@ -183,16 +196,17 @@ export default function BrandImportPage() {
         }
         break;
       case "error":
+        try { sessionStorage.removeItem("brand-import-running"); } catch {}
         setProgress((p) => ({ ...p, phase: "error", message: event.message }));
         break;
     }
   }, [alreadyInProject]);
 
-  const runStream = useCallback(async (brandUrl: string, pid: string) => {
+  const runStream = useCallback(async (brandUrl: string, pid: string, isResume = false) => {
     const res = await fetch("/api/brand-catalogue", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ brandUrl, projectId: pid }),
+      body: JSON.stringify({ brandUrl, projectId: pid, isResume }),
     });
     if (!res.ok || !res.body) {
       setProgress((p) => ({ ...p, phase: "error", message: "Failed to connect. Please try again." }));
@@ -228,11 +242,14 @@ export default function BrandImportPage() {
     });
   }, [handleEvent, projectId]);
 
-  // Auto-resume when stream drops mid-extraction
+  // Auto-resume when stream drops mid-extraction or user returns to page
   useEffect(() => {
     if (resumeFlag === 0 || !url.trim()) return;
+    try { sessionStorage.setItem("brand-import-running", projectId); } catch {}
     setProgress((p) => ({ ...p, phase: "extracting", message: "Resuming…" }));
-    runStream(url.trim(), projectId);
+    runStream(url.trim(), projectId, true).finally(() => {
+      try { sessionStorage.removeItem("brand-import-running"); } catch {}
+    });
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [resumeFlag]);
 
@@ -260,7 +277,10 @@ export default function BrandImportPage() {
     setCategoryFilter("all");
     setProgress({ phase: "discovering", message: "Connecting…", extracted: 0, failed: 0, total: 0, brandId: null, brandName: null });
 
+    // Mark extraction as running so we can auto-resume if the user navigates away
+    try { sessionStorage.setItem("brand-import-running", projectId); } catch {}
     await runStream(trimmed, projectId);
+    try { sessionStorage.removeItem("brand-import-running"); } catch {}
   }, [url, projectId, runStream]);
 
   const toggleSelect = useCallback((id: string) => {

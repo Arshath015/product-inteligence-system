@@ -44,6 +44,7 @@ export async function POST(req: NextRequest) {
   const body = await req.json().catch(() => null);
   const brandUrl = body?.brandUrl as string | undefined;
   const projectId = body?.projectId as string | undefined;
+  const isResume = body?.isResume === true;
   if (!brandUrl) {
     return NextResponse.json({ error: "Missing brandUrl" }, { status: 400 });
   }
@@ -64,7 +65,7 @@ export async function POST(req: NextRequest) {
   };
 
   // Run extraction asynchronously — stream results back via SSE
-  extractBrandCatalogue(projectId, brandUrl, send).finally(() => {
+  extractBrandCatalogue(projectId, brandUrl, send, { isResume }).finally(() => {
     writer.close().catch(() => {});
   });
 
