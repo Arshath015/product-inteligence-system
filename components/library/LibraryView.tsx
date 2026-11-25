@@ -36,7 +36,7 @@ const PAGE_SIZE = 60;
 const MAX_DISCOVERED_PRODUCTS = 5000;
 const missingImage = <div className="flex h-full items-center justify-center text-xs text-muted">Image unavailable</div>;
 
-export function LibraryView() {
+export function LibraryView({ returnProjectId }: { returnProjectId: string | null }) {
   const [products, setProducts] = useState<LibraryProduct[]>([]);
   const [total, setTotal] = useState(0);
   const [brands, setBrands] = useState<string[]>([]);
@@ -221,7 +221,12 @@ export function LibraryView() {
         <div className="mx-auto max-w-7xl">
           <div className="flex flex-wrap items-end justify-between gap-4">
             <div>
-              <Link href="/" className="text-xs uppercase tracking-[0.16em] text-muted hover:text-foreground">← Projects</Link>
+              <Link
+                href={returnProjectId ? `/p/${returnProjectId}` : "/"}
+                className="text-xs uppercase tracking-[0.16em] text-muted hover:text-foreground"
+              >
+                {returnProjectId ? "← Project catalogue" : "← Projects"}
+              </Link>
               <p className="text-xs uppercase tracking-[0.2em] text-accent">ALTOSSA / Global collection</p>
               <h1 className="mt-1 font-serif text-3xl text-foreground">Library</h1>
               <p className="mt-1 text-sm text-muted">{total} products shared across your projects</p>

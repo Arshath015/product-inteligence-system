@@ -84,7 +84,7 @@ function Shell({ children }: { children: React.ReactNode }) {
       // of waiting on a cold RSC fetch on the first click to each tab.
       prefetch={true}
       className={`text-sm transition-colors ${
-        pathname === href ? "text-foreground" : "text-muted hover:text-foreground"
+        pathname === href.split("?")[0] ? "text-foreground" : "text-muted hover:text-foreground"
       }`}
     >
       {label}
@@ -108,7 +108,7 @@ function Shell({ children }: { children: React.ReactNode }) {
           </div>
           <nav className="hidden items-center gap-6 sm:flex">
             {navLink(`/p/${projectId}`, "Catalogue")}
-            {navLink("/library", "Library")}
+            {navLink(`/library?fromProjectId=${encodeURIComponent(projectId)}`, "Library")}
             {navLink(`/p/${projectId}/brands`, "Brands")}
             {navLink(`/p/${projectId}/manufacturers`, "Manufacturers")}
             {navLink(`/p/${projectId}/inspiration`, "Inspiration")}
