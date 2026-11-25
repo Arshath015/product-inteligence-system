@@ -22,6 +22,7 @@ export function CatalogueView() {
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [showCopy, setShowCopy] = useState(false);
   const [exporting, setExporting] = useState(false);
+  const [addingToLibrary, setAddingToLibrary] = useState(false);
   const [actionMessage, setActionMessage] = useState<string | null>(null);
 
   useEffect(() => {
@@ -65,6 +66,39 @@ export function CatalogueView() {
       }
       return next;
     });
+  };
+
+  const addToGlobalLibrary = async (allProducts: boolean) => {
+    if (addingToLibrary || (!allProducts && selectedIds.size === 0)) return;
+    setAddingToLibrary(true);
+    setActionMessage(null);
+    try {
+      const response = await fetch("/api/library/from-project", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(
+          allProducts
+            ? { projectId, allProducts: true }
+            : { projectId, productIds: [...selectedIds] }
+        ),
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || "Could not add products to the Global Library.");
+
+      if (result.requested === 0) {
+        setActionMessage("This project's Catalogue has no products to add.");
+      } else {
+        setActionMessage(
+          `Added ${result.added} product(s) to the Global Library; ${result.duplicates} duplicate(s) skipped.` +
+            (result.failed ? ` ${result.failed} could not be added${result.errors?.[0] ? `: ${result.errors[0]}` : "."}` : "")
+        );
+      }
+      if (!allProducts) setSelectedIds(new Set());
+    } catch (error) {
+      setActionMessage((error as Error).message);
+    } finally {
+      setAddingToLibrary(false);
+    }
   };
 
   const downloadPresentation = async () => {
@@ -136,6 +170,13 @@ export function CatalogueView() {
             + Add
           </button>
           <button
+            onClick={() => void addToGlobalLibrary(true)}
+            disabled={addingToLibrary}
+            className="rounded-full border border-border px-4 py-1.5 text-xs text-muted transition-colors hover:text-foreground disabled:opacity-50"
+          >
+            {addingToLibrary ? "Adding…" : "Add all to Global Library"}
+          </button>
+          <button
             onClick={() => {
               setSelecting((value) => !value);
               setSelectedIds(new Set());
@@ -155,6 +196,13 @@ export function CatalogueView() {
           <span className="mr-auto text-sm text-foreground">{selectedIds.size} selected</span>
           <button onClick={toggleVisible} className="rounded-full border border-border px-3 py-1.5 text-xs text-muted hover:text-foreground">
             Select visible
+          </button>
+          <button
+            onClick={() => void addToGlobalLibrary(false)}
+            disabled={selectedIds.size === 0 || addingToLibrary}
+            className="rounded-full border border-border px-3 py-1.5 text-xs text-muted hover:text-foreground disabled:opacity-40"
+          >
+            {addingToLibrary ? "Adding…" : "Add to Global Library"}
           </button>
           <button
             onClick={() => setShowCopy(true)}

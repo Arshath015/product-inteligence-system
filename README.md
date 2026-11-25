@@ -63,6 +63,9 @@ catalogue automatically — images included.
 - `lib/library.ts` — the global Library import and catalogue service. Brand
   scans are persisted as resumable runs, processed in bounded batches, and
   stored independently from project catalogues with images in Supabase Storage.
+- `lib/projectLibrary.ts` and `app/api/library/from-project/route.ts` — add
+  selected products or the entire project catalogue to the Global Library,
+  preserving product details and images while skipping existing source URLs.
 - `lib/productCopy.ts` and `app/api/presentations/route.ts` — copy selected
   Library or project products into another project while preserving product
   details and image references; create one-slide-per-product PowerPoint decks
@@ -102,7 +105,8 @@ catalogue automatically — images included.
   access goes through these server routes using the Supabase **service
   role** key — nothing talks to Supabase directly from the browser.
 - `components/catalog/*` — the visual catalogue (grid, filters, detail
-  modal, add dialog, brand directory, bulk selection and PowerPoint export).
+  modal, add dialog, brand directory, bulk selection, Global Library actions,
+  and PowerPoint export).
 - `components/library/LibraryView.tsx` — the reusable global Library, with
   cross-project filtering/search, URL imports, selection, copying and PPT export.
 - `components/inspiration/*` — the Inspiration library (separate from the
