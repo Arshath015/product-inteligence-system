@@ -52,6 +52,21 @@ catalogue automatically — images included.
 - `lib/ingest.ts` — the full "paste a URL" pipeline: extract → resolve →
   dedupe → create or enrich → store image. Idempotent, so retries (e.g. from
   a Groq key rotation mid-chat) are safe.
+- `lib/bulk/brandCrawl.ts` and `lib/bulk/discoverLinks.ts` — brand-wide
+  discovery from sitemap indexes (including robots.txt declarations), internal
+  product/category links, structured product data, bounded pagination, and a
+  Tavily fallback for dynamic catalogues. Discovery and ingestion are capped,
+  deduplicated, and report actual added/duplicate/failed counts. Discovery
+  prioritizes one storefront locale when a sitemap contains regional copies;
+  results remain bounded observations, not a guarantee of absolute catalogue
+  completeness. No paid unblocking provider or browser automation is enabled.
+- `lib/library.ts` — the global Library import and catalogue service. Brand
+  scans are persisted as resumable runs, processed in bounded batches, and
+  stored independently from project catalogues with images in Supabase Storage.
+- `lib/productCopy.ts` and `app/api/presentations/route.ts` — copy selected
+  Library or project products into another project while preserving product
+  details and image references; create one-slide-per-product PowerPoint decks
+  with proportionally fitted imagery and clickable source links.
 - `lib/chat/memory.ts` — multi-conversation support (list/create/rename/
   archive/delete, auto-titled from the first message), rolling per-conversation
   summaries (tracked via `summarized_through_message_id` so each summarization
@@ -87,7 +102,9 @@ catalogue automatically — images included.
   access goes through these server routes using the Supabase **service
   role** key — nothing talks to Supabase directly from the browser.
 - `components/catalog/*` — the visual catalogue (grid, filters, detail
-  modal, add dialog, brand directory).
+  modal, add dialog, brand directory, bulk selection and PowerPoint export).
+- `components/library/LibraryView.tsx` — the reusable global Library, with
+  cross-project filtering/search, URL imports, selection, copying and PPT export.
 - `components/inspiration/*` — the Inspiration library (separate from the
   product catalogue — a saved Pinterest/Instagram reference is never
   auto-promoted to a catalogue product).
@@ -124,7 +141,10 @@ Copy `.env.example` to `.env.local` and fill in real values. **Never commit
    - `supabase/migrations/0002_storage.sql`
    - `supabase/migrations/0003_functions.sql`
    - `supabase/migrations/0004_conversations_memory_inspiration.sql`
-4. That's it — no manual table/bucket creation needed in the dashboard UI.
+4. Run migrations `0005_projects.sql` through `0009_global_library.sql` in
+   order to enable project isolation, the brand catalogue, and the resumable
+   global Library.
+5. That's it — no manual table/bucket creation needed in the dashboard UI.
 
 ## Local development
 

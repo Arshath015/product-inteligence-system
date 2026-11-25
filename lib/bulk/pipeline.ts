@@ -57,9 +57,9 @@ export interface BulkIngestSummary {
 const CONCURRENCY = 4;
 const FETCH_TIMEOUT_MS = 15_000;
 const COLLECTION_DISCOVERY_LIMIT = 20;
-const BRAND_MAX_PRODUCTS = 250;
+const BRAND_MAX_PRODUCTS = 5000;
 const BRAND_MAX_INGEST = 50;  // per-run ingestion cap so we stay within Vercel's 300s timeout
-const BRAND_MAX_COLLECTIONS = 30;
+const BRAND_MAX_COLLECTIONS = 60;
 
 // Titles that identify "not found" pages even when the server returns HTTP 200.
 // Same pattern as the one in pageSignals.ts (kept in sync manually).
@@ -389,9 +389,10 @@ async function processOneUrl(
           ? ` Found ${crawl.productUrls.length} product URLs — importing ${BRAND_MAX_INGEST} new ones${alreadyDone > 0 ? ` (${alreadyDone} already in catalogue)` : ""}. Re-run to continue.`
           : alreadyDone > 0 && remaining.length === 0
           ? ` All ${crawl.productUrls.length} discovered product URLs already in catalogue.`
-          : crawl.productUrls.length >= BRAND_MAX_PRODUCTS
-          ? ` Catalogue may have more — run again to continue.`
           : "";
+      const discoveryLimitNote = crawl.stats.truncated
+        ? ` Discovery reached the ${BRAND_MAX_PRODUCTS}-URL safety limit; more products may remain.`
+        : "";
 
       // How many URLs still need ingesting after this run's cap.
       // The caller (tools.ts) uses this to decide whether to continue automatically.
@@ -404,7 +405,7 @@ async function processOneUrl(
         message: resolvedBrand
           ? `Identified brand "${brandName}"${methodNote ? ` (${methodNote.trim()})` : ""}. ` +
             `Discovered ${crawl.stats.totalDiscovered} product URL(s) — ` +
-            `added ${added}, ${dupes} duplicate(s), ${failed} failed.${cappedNote}`
+            `added ${added}, ${dupes} duplicate(s), ${failed} failed.${cappedNote}${discoveryLimitNote}`
           : `Couldn't resolve a brand from that page.`,
         brandId: resolvedBrand?.id ?? null,
         brandCreated: resolvedBrand?.created,

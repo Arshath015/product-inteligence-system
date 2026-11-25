@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { deleteProject, fetchProjects, updateProject } from "@/lib/client/api";
 import type { Project } from "@/lib/types";
@@ -104,6 +105,9 @@ export function ProjectSelectionScreen() {
             <p className="mt-1 text-sm text-muted">Select a project, or create a new client workspace.</p>
           </div>
           <div className="flex items-center gap-2">
+            <Link href="/library" className="rounded-full border border-border px-4 py-2 text-sm text-muted transition-colors hover:border-accent/50 hover:text-foreground">
+              Global Library
+            </Link>
             <div className="flex rounded-full border border-border p-0.5">
               {(["active", "archived"] as const).map((s) => (
                 <button

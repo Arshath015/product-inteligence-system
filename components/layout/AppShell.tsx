@@ -108,6 +108,7 @@ function Shell({ children }: { children: React.ReactNode }) {
           </div>
           <nav className="hidden items-center gap-6 sm:flex">
             {navLink(`/p/${projectId}`, "Catalogue")}
+            {navLink("/library", "Library")}
             {navLink(`/p/${projectId}/brands`, "Brands")}
             {navLink(`/p/${projectId}/manufacturers`, "Manufacturers")}
             {navLink(`/p/${projectId}/inspiration`, "Inspiration")}

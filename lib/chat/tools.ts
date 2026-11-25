@@ -188,7 +188,7 @@ export function buildChatTools(ctx: ToolCtx) {
 
     add_brand_catalogue: tool({
       description:
-        "Register a brand and direct the user to the Brand Import tab to fetch all products. Use when the user asks to 'add all products from [brand]', 'import [brand] catalogue', or 'get everything from [brand].com'. Saves the brand name in the Brands section and tells the user to use the dedicated Brand Import page for live extraction with product selection.",
+        "Import a brand's discovered product catalogue into the active project's catalogue in controlled batches. Use when the user asks to add all products from a brand, import its catalogue, or get everything from its website. The result reports actual discovered, added, duplicate and failed counts; never claim the whole catalogue was added when work remains.",
       inputSchema: z.object({
         brandUrl: z
           .string()
@@ -198,16 +198,16 @@ export function buildChatTools(ctx: ToolCtx) {
           .describe("The brand's display name, e.g. Pianca"),
       }),
       execute: async ({ brandUrl, brandName }) => {
-        // Register the brand in this project (creates the brand record if needed)
-        // so it appears in the Brands tab, then direct the user to the Brand Import
-        // tab where they can watch live extraction progress and select which
-        // products to add.
-        await processBulkUrls(ctx.projectId, [brandUrl]).catch(() => null);
-
+        const summary = await processBulkUrls(ctx.projectId, [brandUrl]);
+        const result = summary.results[0];
         return {
           brand: brandName,
-          action: "redirect_to_import",
-          message: `Added **${brandName}** to your Brands. Use the **Brand Import** tab in the top navigation to extract all products with a live progress counter and product selection.`,
+          discovered: result?.discovered?.length ?? 0,
+          added: summary.counts.productsAdded,
+          duplicates: summary.counts.duplicates,
+          failed: summary.counts.failed,
+          remaining: result?.pendingProducts ?? 0,
+          message: result?.message ?? `No product pages were discovered for ${brandName}.`,
         };
       },
     }),

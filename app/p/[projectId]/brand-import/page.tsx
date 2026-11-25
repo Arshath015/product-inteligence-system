@@ -12,6 +12,7 @@ interface ProgressState {
   extracted: number;
   failed: number;
   total: number;
+  truncated: boolean;
   brandId: string | null;
   brandName: string | null;
 }
@@ -87,7 +88,7 @@ export default function BrandImportPage() {
   const [categoryFilter, setCategoryFilter] = useState("all");
 
   const [progress, setProgress] = useState<ProgressState>({
-    phase: "idle", message: "", extracted: 0, failed: 0, total: 0, brandId: null, brandName: null,
+    phase: "idle", message: "", extracted: 0, failed: 0, total: 0, truncated: false, brandId: null, brandName: null,
   });
 
   const [adding, setAdding] = useState(false);
@@ -178,15 +179,15 @@ export default function BrandImportPage() {
           }, 400);
           setProgress((p) => ({
             ...p, phase: "extracting", extracted: event.extracted,
-            failed: event.failed, total: event.total,
+            failed: event.failed, total: event.total, truncated: event.truncated,
             message: `Extracted ${event.extracted} so far, continuing…`,
           }));
         } else {
           try { sessionStorage.removeItem("brand-import-running"); } catch {}
           setProgress((p) => ({
             ...p, phase: "done", extracted: event.extracted, failed: event.failed,
-            total: event.total, brandId: event.brandId,
-            message: `${event.extracted} products extracted`,
+            total: event.total, brandId: event.brandId, truncated: event.truncated,
+            message: `${event.extracted} product page(s) processed${event.truncated ? " (catalogue discovery reached the 5,000-URL safety limit)" : ""}`,
           }));
           setBrandBuckets((prev) => {
             const products = prev[event.brandId]?.products ?? [];
@@ -240,18 +241,20 @@ export default function BrandImportPage() {
       }
       return p;
     });
-  }, [handleEvent, projectId]);
+  }, [handleEvent]);
 
   // Auto-resume when stream drops mid-extraction or user returns to page
   useEffect(() => {
     if (resumeFlag === 0 || !url.trim()) return;
     try { sessionStorage.setItem("brand-import-running", projectId); } catch {}
-    setProgress((p) => ({ ...p, phase: "extracting", message: "Resuming…" }));
-    runStream(url.trim(), projectId, true).finally(() => {
-      try { sessionStorage.removeItem("brand-import-running"); } catch {}
-    });
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [resumeFlag]);
+    const timer = setTimeout(() => {
+      setProgress((p) => ({ ...p, phase: "extracting", message: "Resuming…" }));
+      runStream(url.trim(), projectId, true).finally(() => {
+        try { sessionStorage.removeItem("brand-import-running"); } catch {}
+      });
+    }, 0);
+    return () => clearTimeout(timer);
+  }, [resumeFlag, url, projectId, runStream]);
 
   // Warn before reload/navigate-away while extraction is running
   useEffect(() => {
@@ -275,7 +278,7 @@ export default function BrandImportPage() {
     setAlreadyInProject(new Set());
     setAddResult(null);
     setCategoryFilter("all");
-    setProgress({ phase: "discovering", message: "Connecting…", extracted: 0, failed: 0, total: 0, brandId: null, brandName: null });
+    setProgress({ phase: "discovering", message: "Connecting…", extracted: 0, failed: 0, total: 0, truncated: false, brandId: null, brandName: null });
 
     // Mark extraction as running so we can auto-resume if the user navigates away
     try { sessionStorage.setItem("brand-import-running", projectId); } catch {}
@@ -286,7 +289,8 @@ export default function BrandImportPage() {
   const toggleSelect = useCallback((id: string) => {
     setSelected((prev) => {
       const next = new Set(prev);
-      next.has(id) ? next.delete(id) : next.add(id);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
       return next;
     });
   }, []);
@@ -392,6 +396,11 @@ export default function BrandImportPage() {
           </div>
           {progress.failed > 0 && (
             <p className="mt-2 text-xs text-muted">{progress.failed} pages unavailable (skipped)</p>
+          )}
+          {progress.truncated && (
+            <p className="mt-2 text-xs text-muted">
+              This scan reached its safety limit; more products may remain. Use the global Library&apos;s Discover more action or import a specific category page.
+            </p>
           )}
         </div>
       )}

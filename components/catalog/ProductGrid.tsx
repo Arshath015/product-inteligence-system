@@ -7,10 +7,16 @@ export function ProductGrid({
   products,
   loading,
   onOpen,
+  selecting = false,
+  selectedIds,
+  onToggleSelected,
 }: {
   products: Product[];
   loading: boolean;
   onOpen: (p: Product) => void;
+  selecting?: boolean;
+  selectedIds?: Set<string>;
+  onToggleSelected?: (id: string) => void;
 }) {
   if (loading) {
     return (
@@ -36,7 +42,13 @@ export function ProductGrid({
   return (
     <div className="grid grid-cols-2 gap-4 p-6 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">
       {products.map((p) => (
-        <ProductCard key={p.id} product={p} onOpen={onOpen} />
+        <ProductCard
+          key={p.id}
+          product={p}
+          onOpen={selecting ? () => onToggleSelected?.(p.id) : onOpen}
+          selected={selectedIds?.has(p.id) ?? false}
+          onToggleSelected={selecting ? onToggleSelected : undefined}
+        />
       ))}
     </div>
   );

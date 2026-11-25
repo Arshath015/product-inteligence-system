@@ -30,13 +30,20 @@ Style: short, confident, concise replies. No long explanations, no unnecessary c
 Behavior:
 - If the user's message contains a URL, call save_link on it immediately — do not ask for permission first, and don't try to guess the platform yourself (save_link detects it). Report the short result afterward.
 - save_link routes automatically: product pages go to the catalogue, Pinterest/Instagram links go to the Inspiration library. If extraction was limited (e.g. a platform blocked access), say so briefly — never pretend it fully worked.
-- If the user asks to "add all products from [brand]", "import [brand]'s catalogue", or anything that means bulk-importing an entire brand, call add_brand_catalogue with the brand's homepage URL and name. Never use save_link for this — it only handles single pages. add_brand_catalogue crawls the whole site automatically.
+- If the user asks to "add all products from [brand]", "import [brand]'s catalogue", or anything that means bulk-importing an entire brand, call add_brand_catalogue with the brand's homepage URL and name. Never use save_link for this — it only handles single pages. The catalogue crawler discovers product URLs first, processes in controlled batches, and reports actual counts; do not claim all products were added if work remains.
 - If asked to find/research products, call search_catalog first. Only call web_research if the catalogue doesn't have enough. Don't import every result you find — only save_link the specific products worth adding, and say so briefly.
 - Only use save_link for an individual product detail page (names and shows a single specific item). NEVER use save_link for a category/collection page, a brand homepage, or a search-results page — it has no reliable single name+image pairing. For brand homepages, use add_brand_catalogue instead. If web_research only turns up listing pages, run a more specific query (brand + model name) or just describe the findings in text without saving anything.
 - After research/ingestion, briefly name what you did (e.g. which products/inspiration you added vs. which you only found) — never just say "Done."
 - When the user refers to earlier products ("the second one", "more like that"), use the "Previously shown products" list below to resolve the reference — don't ask them to repeat themselves.
 - Use remember_preference when the client states a durable preference (favorite brand, style, budget). Use recall_memory when the client references something from an earlier session that isn't already in your context below — don't ask them to repeat information you can look up.
 - Never invent product data — only state what tools returned.`;
+
+function requestsBrandCatalogue(message: string): boolean {
+  return (
+    /\b(?:all|every|entire|whole|complete|full|everything)\b[\s\S]{0,60}\b(?:products?|catalog(?:ue)?|range|collection)\b/i.test(message) ||
+    /\b(?:import|add|get|fetch)\b[\s\S]{0,50}\b(?:catalog(?:ue)?|full range|entire range)\b/i.test(message)
+  );
+}
 
 export async function POST(req: NextRequest) {
   const body = await req.json().catch(() => null);
@@ -62,9 +69,22 @@ export async function POST(req: NextRequest) {
   // faster (no per-URL LLM round-trip to decide to call a tool), and skips
   // building conversation-history/memory context the bulk path never uses.
   const bulkUrls = extractAllUrls(message);
+  const brandCatalogueIntent = requestsBrandCatalogue(message);
+  if (brandCatalogueIntent && bulkUrls.length === 0) {
+    const bareDomain = message.match(/(?:https?:\/\/)?(?:www\.)?(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,}(?:\/[^\s]*)?/i)?.[0];
+    if (bareDomain) {
+      const url = /^https?:\/\//i.test(bareDomain) ? bareDomain : `https://${bareDomain}`;
+      try {
+        new URL(url);
+        bulkUrls.push(url);
+      } catch {
+        // Leave malformed domain-like text to the normal chat flow.
+      }
+    }
+  }
   const encoder = new TextEncoder();
 
-  if (bulkUrls.length >= 2) {
+  if (bulkUrls.length >= 2 || (brandCatalogueIntent && bulkUrls.length === 1)) {
     return handleBulkUrls({ projectId, conversation, bulkUrls, encoder });
   }
 

@@ -19,8 +19,12 @@ const DIRECTORY_PATH_WORDS = ["mitglieder", "members", "repertoire", "directory"
 const COLLECTION_PATH_WORDS = [
   "collections", "collection", "product-category", "categories", "category",
   "artworks", "collectibles", "catalogue", "catalog", "all-current",
+  "prodotti_categorie", "prodotti-categorie", "product_category",
 ];
-const PRODUCT_PATH_WORDS = ["product", "products", "piece", "pieces", "pdp", "item"];
+const PRODUCT_PATH_WORDS = [
+  "product", "products", "piece", "pieces", "pdp", "item",
+  "prodotto", "prodotti", "produit", "produits", "produkt", "produkte", "producto", "productos",
+];
 
 function looksLikeSpecificSlug(segment: string | undefined): boolean {
   if (!segment) return false;
@@ -75,8 +79,6 @@ const ARTISAN_KEYWORDS = [
   "artisan", "atelier", "craftsman", "craftsperson", "workshop",
   "métiers d'art", "metiers d'art", "mestieri d'arte", "kunsthandwerk", "shipwright", "savoir-faire",
 ];
-const GALLERY_KEYWORDS = ["gallery", "galleries", "curated", "exhibition", "design fair"];
-
 function sameHost(a: string, b: string): boolean {
   try {
     return new URL(a).hostname === new URL(b).hostname;

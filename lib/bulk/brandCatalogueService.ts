@@ -7,7 +7,7 @@ import { getSupabaseAdmin } from "@/lib/supabase/server";
 import { fetchPageSignals, hasUsableSignal, BROWSER_HEADERS } from "@/lib/pageSignals";
 import { extractProductFromUrl } from "@/lib/extraction";
 import { crawlBrandCatalogue } from "@/lib/bulk/brandCrawl";
-import { resolveBrandDetailed } from "@/lib/catalog";
+import { resolveBrandDetailed, resolveDesigner } from "@/lib/catalog";
 import { slugify } from "@/lib/slug";
 import { nanoid } from "nanoid";
 import type { ExtractedProductData } from "@/lib/types";
@@ -31,7 +31,7 @@ export type ExtractProgressEvent =
   | { type: "discovered"; total: number; brandId: string; brandName: string; alreadyExtracted: number }
   | { type: "product"; product: CatalogueProduct; extracted: number; total: number; failed: number }
   | { type: "skip"; url: string; extracted: number; total: number; failed: number }
-  | { type: "done"; extracted: number; total: number; failed: number; brandId: string; hasMore: boolean }
+  | { type: "done"; extracted: number; total: number; failed: number; brandId: string; hasMore: boolean; truncated: boolean }
   | { type: "error"; message: string };
 
 // Titles that identify "not found" pages even when the server returns HTTP 200.
@@ -160,7 +160,7 @@ export async function extractBrandCatalogue(
       brandUrl,
       homepageSignals,
       (msg) => onEvent({ type: "phase", phase: "discovering", message: msg }),
-      { maxProducts: 300, maxCollections: 40 }
+      { maxProducts: 5000, maxCollections: 60 }
     );
 
     const rawUrls = crawl.productUrls;
@@ -201,7 +201,7 @@ export async function extractBrandCatalogue(
     const toExtract = rawUrls.filter((u) => !alreadyDoneSet.has(u));
 
     if (toExtract.length === 0) {
-      onEvent({ type: "done", extracted: streamedCount, total: rawUrls.length, failed: 0, brandId: resolved.id, hasMore: false });
+      onEvent({ type: "done", extracted: streamedCount, total: rawUrls.length, failed: 0, brandId: resolved.id, hasMore: false, truncated: crawl.stats.truncated });
       return;
     }
 
@@ -265,14 +265,21 @@ export async function extractBrandCatalogue(
 
         const row = {
           brand_id: resolved.id,
+          brand_name: resolved.name,
+          brand_website_url: brandUrl,
+          designer_name: data.designerName,
           name: data.name,
           slug,
           source_url: url,
           description: data.description ?? null,
+          materials: data.materials ?? null,
+          dimensions: data.dimensions ?? null,
+          price_text: data.priceText ?? null,
           images,
           primary_image_url: images[0] ?? null,
           category_id: categoryId,
           category_name: data.categoryHint ?? null,
+          image_status: images.length > 0 ? "pending" : "missing",
         };
 
         const { data: saved, error } = await supabase
@@ -302,7 +309,7 @@ export async function extractBrandCatalogue(
 
     // hasMore = true when more unprocessed URLs remain beyond this batch
     const hasMore = toExtract.length > MAX_PER_CALL;
-    onEvent({ type: "done", extracted, total, failed, brandId: resolved.id, hasMore });
+    onEvent({ type: "done", extracted, total, failed, brandId: resolved.id, hasMore, truncated: crawl.stats.truncated });
   } catch (err) {
     onEvent({ type: "error", message: (err as Error).message });
   }
@@ -337,17 +344,21 @@ export async function selectCatalogueProducts(
 
   if (toInsert.length === 0) return { added: 0, duplicates };
 
-  const rows = toInsert.map((p) => ({
+  const rows = await Promise.all(toInsert.map(async (p) => ({
     project_id: projectId,
     brand_id: p.brand_id as string,
     name: p.name as string,
     slug: `${slugify(p.name as string)}-${nanoid(6)}`,
     source_url: p.source_url as string,
     description: p.description as string | null,
+    materials: p.materials as string | null,
+    dimensions: p.dimensions as string | null,
+    price_text: p.price_text as string | null,
     category_id: p.category_id as string | null,
+    designer_id: await resolveDesigner(p.designer_name as string | null),
     status: "published",
     extraction_status: "complete",
-  }));
+  })));
 
   const { data: inserted, error } = await supabase
     .from("products")
@@ -356,23 +367,51 @@ export async function selectCatalogueProducts(
 
   if (error || !inserted) return { added: 0, duplicates };
 
+  const { error: referenceError } = await supabase
+    .from("project_products")
+    .upsert(
+      inserted.map((product) => ({ project_id: projectId, product_id: product.id as string })),
+      { onConflict: "project_id,product_id", ignoreDuplicates: true },
+    );
+  if (referenceError) {
+    await supabase.from("products").delete().in("id", inserted.map((product) => product.id as string));
+    throw new Error(referenceError.message);
+  }
+
   // Insert images for each newly added product
-  const imageInserts: { product_id: string; original_url: string; is_primary: boolean; status: string }[] = [];
+  const imageInserts: {
+    product_id: string;
+    original_url: string;
+    is_primary: boolean;
+    status: string;
+    storage_path?: string | null;
+    public_url?: string | null;
+  }[] = [];
   for (const product of inserted) {
     const src = items.find((p) => p.source_url === product.source_url);
-    const imgs: string[] = Array.isArray(src?.images) ? (src.images as string[]) : [];
+    const imgs: string[] = Array.isArray(src?.images) ? src.images as string[] : [];
     for (let i = 0; i < imgs.length; i++) {
       imageInserts.push({
         product_id: product.id as string,
         original_url: imgs[i],
         is_primary: i === 0,
-        status: "pending",
+        ...(i === 0 && src?.image_status === "stored" && src.image_public_url
+          ? {
+              storage_path: src.image_storage_path as string | null,
+              public_url: src.image_public_url as string | null,
+              status: "stored",
+            }
+          : { status: "pending" }),
       });
     }
   }
 
   if (imageInserts.length > 0) {
-    await supabase.from("product_images").insert(imageInserts);
+    const { error: imageError } = await supabase.from("product_images").insert(imageInserts);
+    if (imageError) {
+      await supabase.from("products").delete().in("id", inserted.map((product) => product.id as string));
+      throw new Error(imageError.message);
+    }
   }
 
   return { added: inserted.length, duplicates };
