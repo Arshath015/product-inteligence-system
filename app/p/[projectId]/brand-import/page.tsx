@@ -3,6 +3,7 @@
 import { memo, useCallback, useEffect, useRef, useState } from "react";
 import { useProject } from "@/components/project/ProjectContext";
 import type { CatalogueProduct, ExtractProgressEvent } from "@/lib/bulk/brandCatalogueService";
+import type { CatalogueReconciliationPreview } from "@/lib/bulk/catalogueReconciliation";
 
 type Phase = "idle" | "discovering" | "extracting" | "done" | "error";
 
@@ -121,6 +122,15 @@ export default function BrandImportPage() {
   const [categoryEdit, setCategoryEdit] = useState("");
   const [categorySaving, setCategorySaving] = useState(false);
   const [categoryResult, setCategoryResult] = useState("");
+  const [reconciliationOpen, setReconciliationOpen] = useState(false);
+  const [reconciliationLoading, setReconciliationLoading] = useState(false);
+  const [reconciliationApplying, setReconciliationApplying] = useState(false);
+  const [reconciliationError, setReconciliationError] = useState("");
+  const [reconciliationPreview, setReconciliationPreview] = useState<CatalogueReconciliationPreview | null>(null);
+  const [selectedCorrectionIds, setSelectedCorrectionIds] = useState<Set<string>>(new Set());
+  const [selectedDuplicateGroupIds, setSelectedDuplicateGroupIds] = useState<Set<string>>(new Set());
+  const [duplicateKeepers, setDuplicateKeepers] = useState<Record<string, string>>({});
+  const [restoringDuplicateId, setRestoringDuplicateId] = useState<string | null>(null);
   const [diagnosticsOpen, setDiagnosticsOpen] = useState(false);
   const [diagnosticsLoading, setDiagnosticsLoading] = useState(false);
   const [diagnosticsText, setDiagnosticsText] = useState("");
@@ -471,6 +481,147 @@ export default function BrandImportPage() {
     }
   };
 
+  const openReconciliation = async () => {
+    if (!activeBrandId) return;
+    setReconciliationLoading(true);
+    setReconciliationError("");
+    try {
+      const res = await fetch("/api/brand-catalogue/reconcile", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "preview", projectId, brandId: activeBrandId }),
+      });
+      const data = await res.json().catch(() => null);
+      if (!res.ok) throw new Error(typeof data?.error === "string" ? data.error : "Could not preview catalogue corrections.");
+      if (!Array.isArray(data?.categoryCorrections) || !Array.isArray(data?.duplicateCandidates)) {
+        throw new Error("The reconciliation preview returned an invalid response.");
+      }
+
+      const preview: CatalogueReconciliationPreview = {
+        categoryCorrections: data.categoryCorrections,
+        duplicateCandidates: data.duplicateCandidates,
+      };
+      setReconciliationPreview(preview);
+      setSelectedCorrectionIds(new Set(preview.categoryCorrections.map((correction) => correction.id)));
+      setSelectedDuplicateGroupIds(new Set(preview.duplicateCandidates.map((candidate) => candidate.id)));
+      setDuplicateKeepers(Object.fromEntries(
+        preview.duplicateCandidates.map((candidate) => [candidate.id, candidate.productIds[0]]),
+      ));
+      setReconciliationOpen(true);
+    } catch (error) {
+      setReconciliationError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setReconciliationLoading(false);
+    }
+  };
+
+  const applyReconciliation = async () => {
+    if (!activeBrandId || !reconciliationPreview || reconciliationApplying) return;
+    const categoryChanges = selectedCategoryCorrections
+      .map(({ id, proposedCategory }) => ({ id, proposedCategory }));
+    const duplicateLinks = selectedDuplicateLinks.map(({ id, canonicalId }) => ({
+      duplicateId: id,
+      canonicalId,
+    }));
+    if (categoryChanges.length === 0 && duplicateLinks.length === 0) {
+      setReconciliationError("Select at least one category correction or duplicate group to apply.");
+      return;
+    }
+
+    setReconciliationApplying(true);
+    setReconciliationError("");
+    try {
+      const res = await fetch("/api/brand-catalogue/reconcile", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "apply",
+          projectId,
+          brandId: activeBrandId,
+          confirmed: true,
+          categoryChanges,
+          duplicateLinks,
+        }),
+      });
+      const data = await res.json().catch(() => null);
+      if (!res.ok) throw new Error(typeof data?.error === "string" ? data.error : "Could not apply catalogue corrections.");
+
+      const categoryMap = new Map<string, { category_name: string; category_id: string | null }>(
+        (Array.isArray(data?.categoryChanges) ? data.categoryChanges : [])
+          .filter((change: unknown) => Boolean(change && typeof change === "object" && "id" in change))
+          .map((change: { id: string; category_name: string; category_id: string | null }) => [
+            change.id,
+            { category_name: change.category_name, category_id: change.category_id },
+          ]),
+      );
+      const duplicateMap = new Map<string, string>(duplicateLinks.map(({ duplicateId, canonicalId }) => [duplicateId, canonicalId]));
+      setBrandBuckets((prev) => {
+        const bucket = prev[activeBrandId];
+        if (!bucket) return prev;
+        return {
+          ...prev,
+          [activeBrandId]: {
+            ...bucket,
+            products: bucket.products.map((product) => {
+              const category = categoryMap.get(product.id);
+              const duplicateOfId = duplicateMap.get(product.id);
+              return category || duplicateOfId
+                ? {
+                    ...product,
+                    ...(category ?? {}),
+                    ...(duplicateOfId ? { duplicate_of_id: duplicateOfId } : {}),
+                  }
+                : product;
+            }),
+          },
+        };
+      });
+      setSelected(new Set());
+      setCategoryFilter("all");
+      setReconciliationOpen(false);
+      setCategoryResult(
+        `Applied ${data.updatedCategories ?? categoryChanges.length} category correction${(data.updatedCategories ?? categoryChanges.length) === 1 ? "" : "s"} and archived ${data.archivedDuplicates ?? duplicateLinks.length} duplicate record${(data.archivedDuplicates ?? duplicateLinks.length) === 1 ? "" : "s"}.`,
+      );
+    } catch (error) {
+      setReconciliationError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setReconciliationApplying(false);
+    }
+  };
+
+  const restoreDuplicate = async (productId: string) => {
+    if (!activeBrandId || restoringDuplicateId) return;
+    setRestoringDuplicateId(productId);
+    setCategoryResult("");
+    try {
+      const res = await fetch("/api/brand-catalogue/reconcile", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "restore", projectId, brandId: activeBrandId, productIds: [productId] }),
+      });
+      const data = await res.json().catch(() => null);
+      if (!res.ok) throw new Error(typeof data?.error === "string" ? data.error : "Could not restore the archived product.");
+      setBrandBuckets((prev) => {
+        const bucket = prev[activeBrandId];
+        if (!bucket) return prev;
+        return {
+          ...prev,
+          [activeBrandId]: {
+            ...bucket,
+            products: bucket.products.map((product) => product.id === productId
+              ? { ...product, duplicate_of_id: null }
+              : product),
+          },
+        };
+      });
+      setCategoryResult("Restored the archived product to the active catalogue.");
+    } catch (error) {
+      setCategoryResult(`Error: ${error instanceof Error ? error.message : String(error)}`);
+    } finally {
+      setRestoringDuplicateId(null);
+    }
+  };
+
   const toggleDiagnostics = async () => {
     if (diagnosticsOpen) {
       setDiagnosticsOpen(false);
@@ -505,12 +656,28 @@ export default function BrandImportPage() {
 
   // Active brand's products
   const activeBrand = activeBrandId ? brandBuckets[activeBrandId] : null;
-  const allProducts = activeBrand?.products ?? [];
+  const archivedDuplicates = activeBrand?.products.filter((product) => product.duplicate_of_id) ?? [];
+  const allProducts = activeBrand?.products.filter((product) => !product.duplicate_of_id) ?? [];
 
   // Category pills
   const categories = Array.from(new Set(allProducts.map((p) => p.category_name).filter(Boolean) as string[])).sort();
   const visibleProducts = categoryFilter === "all" ? allProducts : allProducts.filter((p) => p.category_name === categoryFilter);
   const selectableCount = visibleProducts.filter((p) => !alreadyInProject.has(p.id)).length;
+  const selectedCategoryCorrections = reconciliationPreview?.categoryCorrections
+    .filter((correction) => selectedCorrectionIds.has(correction.id)) ?? [];
+  const selectedDuplicateCandidates = reconciliationPreview?.duplicateCandidates
+    .filter((candidate) => selectedDuplicateGroupIds.has(candidate.id)) ?? [];
+  const selectedDuplicateLinks = selectedDuplicateCandidates.flatMap((candidate) => {
+    const canonicalId = duplicateKeepers[candidate.id];
+    if (!canonicalId || !candidate.productIds.includes(canonicalId)) return [];
+    return candidate.productIds.filter((id) => id !== canonicalId).map((id) => ({ id, canonicalId }));
+  });
+  const duplicateArchiveIds = new Set(selectedDuplicateLinks.map((link) => link.id));
+  const selectedCategoryMap = new Map(selectedCategoryCorrections.map(({ id, proposedCategory }) => [id, proposedCategory]));
+  const projectedSofaCount = allProducts.filter((product) =>
+    !duplicateArchiveIds.has(product.id)
+    && (selectedCategoryMap.get(product.id) ?? product.category_name)?.trim().toLocaleLowerCase() === "sofas",
+  ).length;
 
   const selectAll = () => setSelected(new Set(visibleProducts.filter((p) => !alreadyInProject.has(p.id)).map((p) => p.id)));
   const deselectAll = () => setSelected(new Set());
@@ -658,7 +825,9 @@ export default function BrandImportPage() {
               }`}
             >
               {brandBuckets[bid].name}
-              <span className="ml-1.5 text-xs text-muted">({brandBuckets[bid].products.length})</span>
+              <span className="ml-1.5 text-xs text-muted">
+                ({brandBuckets[bid].products.filter((product) => !product.duplicate_of_id).length})
+              </span>
             </button>
           ))}
         </div>
@@ -697,7 +866,20 @@ export default function BrandImportPage() {
                 </div>
               )}
             </div>
+            {activeBrandId && (
+              <button
+                type="button"
+                onClick={openReconciliation}
+                disabled={reconciliationLoading || isRunning}
+                className="rounded-full border border-border px-4 py-2 text-xs text-foreground transition-colors hover:border-accent/50 disabled:opacity-50"
+              >
+                {reconciliationLoading ? "Preparing preview…" : "Review saved catalogue"}
+              </button>
+            )}
           </div>
+          {reconciliationError && !reconciliationOpen && (
+            <p role="alert" className="text-xs text-red-400">{reconciliationError}</p>
+          )}
 
           {/* Selection toolbar */}
           <div className="flex flex-wrap items-center justify-between gap-3">
@@ -786,6 +968,197 @@ export default function BrandImportPage() {
               </div>
             </div>
           ))}
+        </div>
+      )}
+
+      {archivedDuplicates.length > 0 && (
+        <details className="rounded-xl border border-border bg-surface p-4">
+          <summary className="cursor-pointer text-sm text-foreground">
+            Archived duplicate entries ({archivedDuplicates.length}) — reversible
+          </summary>
+          <div className="mt-3 space-y-2">
+            {archivedDuplicates.map((product) => (
+              <div key={product.id} className="flex flex-wrap items-center justify-between gap-2 border-t border-border pt-2">
+                <div className="min-w-0">
+                  <p className="truncate text-sm text-foreground">{product.name}</p>
+                  <a
+                    href={product.source_url}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="block truncate text-xs text-accent hover:underline"
+                  >
+                    {product.source_url}
+                  </a>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => restoreDuplicate(product.id)}
+                  disabled={restoringDuplicateId !== null}
+                  className="rounded-full border border-border px-3 py-1.5 text-xs text-foreground hover:border-accent/50 disabled:opacity-50"
+                >
+                  {restoringDuplicateId === product.id ? "Restoring…" : "Restore"}
+                </button>
+              </div>
+            ))}
+          </div>
+        </details>
+      )}
+
+      {reconciliationOpen && reconciliationPreview && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4" role="presentation">
+          <section
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="reconciliation-title"
+            className="max-h-[90vh] w-full max-w-3xl overflow-y-auto rounded-2xl border border-border bg-surface p-5 shadow-2xl"
+          >
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <h2 id="reconciliation-title" className="font-serif text-xl text-foreground">
+                  Review {activeBrand?.name} catalogue
+                </h2>
+                <p className="mt-1 text-sm text-muted">
+                  These are proposals based on each product URL and matching product images. Nothing changes until you apply the reviewed selections.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setReconciliationOpen(false)}
+                className="rounded-full border border-border px-3 py-1.5 text-sm text-muted hover:text-foreground"
+              >
+                Close
+              </button>
+            </div>
+
+            {reconciliationError && (
+              <p role="alert" className="mt-4 rounded-lg border border-red-500/30 bg-red-500/10 p-3 text-sm text-red-400">
+                {reconciliationError}
+              </p>
+            )}
+
+            <div className="mt-5">
+              <h3 className="text-sm font-medium text-foreground">
+                Category corrections ({reconciliationPreview.categoryCorrections.length})
+              </h3>
+              <p className="mt-1 text-xs text-muted">
+                Checked corrections replace the saved category with the category identified by that product&apos;s URL.
+              </p>
+              {reconciliationPreview.categoryCorrections.length === 0 ? (
+                <p className="mt-2 text-sm text-muted">No route-obvious category corrections were found.</p>
+              ) : (
+                <div className="mt-2 divide-y divide-border rounded-xl border border-border">
+                  {reconciliationPreview.categoryCorrections.map((correction) => (
+                    <label key={correction.id} className="flex cursor-pointer items-start gap-3 p-3">
+                      <input
+                        type="checkbox"
+                        checked={selectedCorrectionIds.has(correction.id)}
+                        onChange={(event) => {
+                          setSelectedCorrectionIds((previous) => {
+                            const next = new Set(previous);
+                            if (event.target.checked) next.add(correction.id);
+                            else next.delete(correction.id);
+                            return next;
+                          });
+                        }}
+                        className="mt-1 accent-accent"
+                      />
+                      <span className="min-w-0 flex-1">
+                        <span className="block text-sm text-foreground">
+                          {correction.name}: {correction.currentCategory || "Uncategorized"} → {correction.proposedCategory}
+                        </span>
+                        <a
+                          href={correction.sourceUrl}
+                          target="_blank"
+                          rel="noreferrer"
+                          onClick={(event) => event.stopPropagation()}
+                          className="mt-1 block truncate text-xs text-accent hover:underline"
+                        >
+                          {correction.sourceUrl}
+                        </a>
+                      </span>
+                    </label>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <div className="mt-5">
+              <h3 className="text-sm font-medium text-foreground">
+                Possible duplicate aliases ({reconciliationPreview.duplicateCandidates.length} groups)
+              </h3>
+              <p className="mt-1 text-xs text-muted">
+                Only same-name pages with matching category routes, URL slugs, and at least three shared product images are suggested. Choose the record to keep in each group.
+              </p>
+              {reconciliationPreview.duplicateCandidates.length === 0 ? (
+                <p className="mt-2 text-sm text-muted">No high-confidence duplicate aliases were found.</p>
+              ) : (
+                <div className="mt-2 space-y-3">
+                  {reconciliationPreview.duplicateCandidates.map((candidate) => {
+                    const selected = selectedDuplicateGroupIds.has(candidate.id);
+                    return (
+                      <div key={candidate.id} className="rounded-xl border border-border p-3">
+                        <label className="flex items-start gap-3">
+                          <input
+                            type="checkbox"
+                            checked={selected}
+                            onChange={(event) => {
+                              setSelectedDuplicateGroupIds((previous) => {
+                                const next = new Set(previous);
+                                if (event.target.checked) next.add(candidate.id);
+                                else next.delete(candidate.id);
+                                return next;
+                              });
+                            }}
+                            className="mt-1 accent-accent"
+                          />
+                          <span className="text-sm text-foreground">
+                            Archive aliases for {candidate.name} · {candidate.category}
+                          </span>
+                        </label>
+                        <select
+                          value={duplicateKeepers[candidate.id] ?? ""}
+                          onChange={(event) => setDuplicateKeepers((previous) => ({
+                            ...previous,
+                            [candidate.id]: event.target.value,
+                          }))}
+                          disabled={!selected}
+                          aria-label={`Record to keep for ${candidate.name}`}
+                          className="mt-3 w-full rounded-lg border border-border bg-background px-3 py-2 text-xs text-foreground disabled:opacity-50"
+                        >
+                          {candidate.products.map((product) => (
+                            <option key={product.id} value={product.id}>
+                              Keep: {product.category_name || "Uncategorized"} — {product.source_url}
+                            </option>
+                          ))}
+                        </select>
+                        <p className="mt-2 text-xs text-muted">
+                          {candidate.productIds.length - 1} other record{candidate.productIds.length === 2 ? "" : "s"} will be reversibly archived.
+                        </p>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+
+            <div className="mt-5 flex flex-wrap items-center justify-between gap-3 border-t border-border pt-4">
+              <p className="text-xs text-muted">
+                Selected: {selectedCorrectionIds.size} category correction{selectedCorrectionIds.size === 1 ? "" : "s"} and{" "}
+                {selectedDuplicateLinks.length} reversible duplicate record{selectedDuplicateLinks.length === 1 ? "" : "s"}; projected sofa count: {projectedSofaCount}.
+              </p>
+              <button
+                type="button"
+                onClick={applyReconciliation}
+                disabled={reconciliationApplying || (selectedCorrectionIds.size === 0 && selectedDuplicateLinks.length === 0)}
+                className="rounded-full bg-accent px-5 py-2.5 text-sm font-medium text-accent-foreground hover:bg-accent-hover disabled:opacity-50"
+              >
+                {reconciliationApplying ? "Applying…" : "Apply reviewed corrections"}
+              </button>
+            </div>
+            <p className="mt-2 text-xs text-muted">
+              Archived records can be restored from the catalogue page. Existing project products are not deleted or changed.
+            </p>
+          </section>
         </div>
       )}
     </div>

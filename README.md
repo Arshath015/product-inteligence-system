@@ -145,9 +145,9 @@ Copy `.env.example` to `.env.local` and fill in real values. **Never commit
    - `supabase/migrations/0002_storage.sql`
    - `supabase/migrations/0003_functions.sql`
    - `supabase/migrations/0004_conversations_memory_inspiration.sql`
-4. Run migrations `0005_projects.sql` through `0009_global_library.sql` in
-   order to enable project isolation, the brand catalogue, and the resumable
-   global Library.
+4. Run migrations `0005_projects.sql` through `0010_brand_catalogue_duplicate_archive.sql`
+   in order to enable project isolation, the brand catalogue, the resumable
+   global Library, and reversible brand-catalogue reconciliation.
 5. That's it — no manual table/bucket creation needed in the dashboard UI.
 
 ## Local development

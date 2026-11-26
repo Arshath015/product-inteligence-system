@@ -27,6 +27,7 @@ export interface CatalogueProduct {
   category_id: string | null;
   category_name: string | null;
   extracted_at: string;
+  duplicate_of_id?: string | null;
 }
 
 export type ExtractProgressEvent =
@@ -543,9 +544,10 @@ export async function selectCatalogueProducts(
     .select("*")
     .in("id", brandCatalogueProductIds);
 
-  if (!items || items.length === 0) return { added: 0, duplicates: 0 };
+  const activeItems = (items ?? []).filter((item) => !item.duplicate_of_id);
+  if (activeItems.length === 0) return { added: 0, duplicates: 0 };
 
-  const sourceUrls = items.map((p) => p.source_url as string).filter(Boolean);
+  const sourceUrls = activeItems.map((p) => p.source_url as string).filter(Boolean);
   const { data: existing } = await supabase
     .from("products")
     .select("source_url")
@@ -553,8 +555,8 @@ export async function selectCatalogueProducts(
     .in("source_url", sourceUrls);
   const existingSet = new Set((existing ?? []).map((p) => p.source_url as string));
 
-  const toInsert = items.filter((p) => !existingSet.has(p.source_url as string));
-  const duplicates = items.length - toInsert.length;
+  const toInsert = activeItems.filter((p) => !existingSet.has(p.source_url as string));
+  const duplicates = activeItems.length - toInsert.length;
 
   if (toInsert.length === 0) return { added: 0, duplicates };
 
@@ -602,7 +604,7 @@ export async function selectCatalogueProducts(
     public_url?: string | null;
   }[] = [];
   for (const product of inserted) {
-    const src = items.find((p) => p.source_url === product.source_url);
+    const src = activeItems.find((p) => p.source_url === product.source_url);
     const imgs: string[] = Array.isArray(src?.images) ? src.images as string[] : [];
     for (let i = 0; i < imgs.length; i++) {
       imageInserts.push({
