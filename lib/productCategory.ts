@@ -39,6 +39,21 @@ const CATEGORY_KEYWORDS: [CategorySlug, string[]][] = [
   ["accessories", ["vase", "accessory", "decor", "mirror", "tray"]],
 ];
 
+const PRODUCT_PATH_MARKERS = new Set([
+  "product",
+  "products",
+  "prodotto",
+  "prodotti",
+  "produit",
+  "produits",
+  "producto",
+  "productos",
+  "produkt",
+  "produkte",
+]);
+
+const LANGUAGE_SUFFIXES = new Set(["de", "en", "es", "fr", "it", "nl", "pt"]);
+
 export function guessCategorySlug(text: string | null | undefined): CategorySlug {
   if (!text) return "other";
   const lower = text.toLowerCase();
@@ -46,6 +61,31 @@ export function guessCategorySlug(text: string | null | undefined): CategorySlug
     if (keywords.some((keyword) => lower.includes(keyword))) return slug;
   }
   return "other";
+}
+
+export function categoryFromProductUrl(url: string | null | undefined): CategorySlug | null {
+  if (!url) return null;
+
+  try {
+    const segments = new URL(url).pathname.split("/").filter(Boolean);
+    const productPathIndex = segments.findIndex((segment) =>
+      PRODUCT_PATH_MARKERS.has(segment.toLowerCase()),
+    );
+    if (productPathIndex < 0) return null;
+
+    const categoryPath = segments[productPathIndex + 1];
+    if (!categoryPath) return null;
+
+    const words = categoryPath.toLowerCase().split(/[-_]+/).filter(Boolean);
+    if (words.includes("outdoor")) return "outdoor";
+    if (words.some((word) => word === "and" || word === "or")) return null;
+    while (words.length > 1 && LANGUAGE_SUFFIXES.has(words[words.length - 1])) words.pop();
+
+    const category = guessCategorySlug(words.join(" "));
+    return category === "other" ? null : category;
+  } catch {
+    return null;
+  }
 }
 
 export function refineCategoryHint(

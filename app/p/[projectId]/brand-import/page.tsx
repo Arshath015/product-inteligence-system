@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useRef, useState } from "react";
 import { useProject } from "@/components/project/ProjectContext";
 import type { CatalogueProduct, ExtractProgressEvent } from "@/lib/bulk/brandCatalogueService";
 
@@ -93,6 +93,8 @@ function CatalogCard({
   );
 }
 
+const MemoCatalogCard = memo(CatalogCard);
+
 // ─── Main page ────────────────────────────────────────────────────────────────
 
 export default function BrandImportPage() {
@@ -158,6 +160,10 @@ export default function BrandImportPage() {
         // Auto-resume if extraction was interrupted (flag stored in sessionStorage)
         const wasRunning = (() => { try { return sessionStorage.getItem("brand-import-running") === projectId; } catch { return false; } })();
         const savedRunId = (() => { try { return sessionStorage.getItem("brand-import-run-id"); } catch { return null; } })();
+        if (savedRunId) {
+          runIdRef.current = savedRunId;
+          setProgress((p) => ({ ...p, runId: savedRunId }));
+        }
         if (wasRunning && savedUrl) {
           runIdRef.current = savedRunId;
           setProgress((p) => ({ ...p, phase: "extracting", message: "Resuming interrupted extraction…" }));
@@ -420,32 +426,44 @@ export default function BrandImportPage() {
   const changeSelectedCategory = async () => {
     const categoryName = categoryEdit.trim();
     if (selected.size === 0 || !categoryName || categorySaving) return;
+    const startedAt = performance.now();
     setCategorySaving(true);
     setCategoryResult("");
     try {
       const res = await fetch("/api/brand-catalogue/category", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ projectId, productIds: [...selected], categoryName }),
+        body: JSON.stringify({
+          projectId,
+          productIds: [...selected],
+          categoryName,
+          runId: progress.runId,
+          brandName: progress.brandName,
+        }),
       });
       const data = await res.json().catch(() => null);
       if (!res.ok) throw new Error(typeof data?.error === "string" ? data.error : "Could not update product categories.");
 
       const selectedIds = new Set(selected);
-      setBrandBuckets((prev) => Object.fromEntries(
-        Object.entries(prev).map(([brandId, bucket]) => [
-          brandId,
-          {
+      setBrandBuckets((prev) => {
+        const next = { ...prev };
+        let changed = false;
+        for (const [brandId, bucket] of Object.entries(prev)) {
+          if (!bucket.products.some((product) => selectedIds.has(product.id))) continue;
+          next[brandId] = {
             ...bucket,
             products: bucket.products.map((product) => selectedIds.has(product.id)
               ? { ...product, category_name: data.categoryName, category_id: data.categoryId }
               : product),
-          },
-        ]),
-      ));
+          };
+          changed = true;
+        }
+        return changed ? next : prev;
+      });
       setSelected(new Set());
       setCategoryFilter("all");
-      setCategoryResult(`Updated ${data.updated} product${data.updated === 1 ? "" : "s"} to “${data.categoryName}”.`);
+      const durationSeconds = ((performance.now() - startedAt) / 1000).toFixed(1);
+      setCategoryResult(`Updated ${data.updated} product${data.updated === 1 ? "" : "s"} to “${data.categoryName}” in ${durationSeconds}s.`);
     } catch (error) {
       setCategoryResult(`Error: ${error instanceof Error ? error.message : String(error)}`);
     } finally {
@@ -468,8 +486,10 @@ export default function BrandImportPage() {
       const data = await res.json().catch(() => null);
       if (!res.ok) throw new Error(typeof data?.error === "string" ? data.error : "Could not load local diagnostics.");
       const records = Array.isArray(data?.records) ? data.records : [];
+      const fileNames = Array.isArray(data?.fileNames) ? data.fileNames.filter((name: unknown): name is string => typeof name === "string") : [];
+      const savedFiles = fileNames.map((fileName: string) => `diagnostics/${fileName}`).join(", ");
       setDiagnosticsText(
-        `${JSON.stringify(records, null, 2)}${data?.truncated ? "\n\nOlder log entries were omitted; showing the most recent records." : ""}`,
+        `${savedFiles ? `Saved locally: ${savedFiles}\n\n` : ""}${JSON.stringify(records, null, 2)}${data?.truncated ? "\n\nOlder log entries were omitted; showing the most recent records." : ""}`,
       );
       setDiagnosticsOpen(true);
     } catch (error) {
@@ -733,7 +753,7 @@ export default function BrandImportPage() {
           {/* Grid */}
           <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5">
             {visibleProducts.map((p) => (
-              <CatalogCard
+              <MemoCatalogCard
                 key={p.id}
                 product={p}
                 selected={selected.has(p.id)}

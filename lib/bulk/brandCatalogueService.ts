@@ -11,6 +11,7 @@ import { resolveBrandDetailed, resolveDesigner } from "@/lib/catalog";
 import { slugify } from "@/lib/slug";
 import { nanoid } from "nanoid";
 import { randomUUID } from "node:crypto";
+import { canonicalSourceUrl } from "@/lib/bulk/canonicalSourceUrl";
 import { recordBrandImportDiagnostic } from "@/lib/bulk/brandImportDiagnostics";
 import type { ExtractedProductData } from "@/lib/types";
 
@@ -143,11 +144,6 @@ export async function extractBrandCatalogue(
     let run: BrandImportRun;
 
     if (resuming) {
-      await recordBrandImportDiagnostic(runId, {
-        stage: "run_resumed",
-        outcome: options?.retryFailed ? "retrying_failures" : "continuing",
-        url: brandUrl,
-      });
       const { data, error } = await supabase
         .from("library_import_runs")
         .select("*")
@@ -156,6 +152,12 @@ export async function extractBrandCatalogue(
         .maybeSingle();
       if (error || !data) throw new Error(error?.message ?? "Brand import run not found for this project.");
       run = data as BrandImportRun;
+      await recordBrandImportDiagnostic(runId, {
+        stage: "run_resumed",
+        outcome: options?.retryFailed ? "retrying_failures" : "continuing",
+        brandName: run.brand_name,
+        url: brandUrl,
+      });
       onEvent({
         type: "discovered",
         runId,
@@ -186,6 +188,7 @@ export async function extractBrandCatalogue(
       await recordBrandImportDiagnostic(runId, {
         stage: "homepage_fetch",
         outcome: usableHomepage ? "readable" : "unavailable",
+        brandName: brandNameGuess,
         url: brandUrl,
         reason: usableHomepage ? undefined : homepageFailure ?? "Homepage did not return usable page signals.",
       });
@@ -230,6 +233,7 @@ export async function extractBrandCatalogue(
       await recordBrandImportDiagnostic(runId, {
         stage: "run_created",
         outcome: "ready",
+        brandName: resolved.name,
         url: brandUrl,
         counts: {
           discovered: run.product_urls.length,
@@ -293,31 +297,45 @@ export async function extractBrandCatalogue(
       progressProcessed = retrying ? run.processed_count : run.processed_count + processedInBatch;
     };
 
+    const reportDuplicate = (
+      product: Record<string, unknown>,
+      url: string,
+      reason: string,
+      canonicalUrl?: string,
+    ) => {
+      duplicatesDelta++;
+      failedUrls.delete(url);
+      delete failureDetails[url];
+      markProcessed();
+      void recordBrandImportDiagnostic(runId, {
+        stage: "product_extraction",
+        outcome: "duplicate",
+        url,
+        canonicalUrl,
+        reason,
+      });
+      if (product.brand_id === run.brand_id) {
+        onEvent({
+          type: "product",
+          product: product as unknown as CatalogueProduct,
+          processed: progressProcessed,
+          total: run.product_urls.length,
+          added: run.added_count + addedDelta,
+          duplicates: run.duplicate_count + duplicatesDelta,
+          failed: failedUrls.size,
+        });
+      }
+    };
+
     await runPool(batch, 5, async (url) => {
       try {
         const existing = existingByUrl.get(url);
         if (existing) {
-          duplicatesDelta++;
-          failedUrls.delete(url);
-          delete failureDetails[url];
-          markProcessed();
-          void recordBrandImportDiagnostic(runId, {
-            stage: "product_extraction",
-            outcome: "duplicate",
+          reportDuplicate(
+            existing as Record<string, unknown>,
             url,
-            reason: "Source URL already exists in the global brand catalogue.",
-          });
-          if (existing.brand_id === run.brand_id) {
-            onEvent({
-              type: "product",
-              product: existing as unknown as CatalogueProduct,
-              processed: progressProcessed,
-              total: run.product_urls.length,
-              added: run.added_count + addedDelta,
-              duplicates: run.duplicate_count + duplicatesDelta,
-              failed: failedUrls.size,
-            });
-          }
+            "Source URL already exists in the global brand catalogue.",
+          );
         } else {
           const extracted: ExtractedProductData = await Promise.race([
             extractProductFromUrl(url),
@@ -326,6 +344,29 @@ export async function extractBrandCatalogue(
             ),
           ]);
           if (!extracted.name.trim()) throw new Error("Page did not contain a product name.");
+
+          const sourceUrl = canonicalSourceUrl(extracted.canonicalUrl, url);
+          if (sourceUrl !== url) {
+            let existingCanonical = existingByUrl.get(sourceUrl);
+            if (!existingCanonical) {
+              const { data, error } = await supabase
+                .from("brand_catalogue_products")
+                .select("source_url, id, name, slug, description, images, primary_image_url, category_id, category_name, extracted_at, brand_id")
+                .eq("source_url", sourceUrl)
+                .maybeSingle();
+              if (error) throw new Error(error.message);
+              existingCanonical = data ?? undefined;
+            }
+            if (existingCanonical) {
+              reportDuplicate(
+                existingCanonical as Record<string, unknown>,
+                url,
+                "The page canonicalizes to a product URL already in the global brand catalogue.",
+                sourceUrl,
+              );
+              return;
+            }
+          }
 
           const hint = extracted.categoryHint?.toLowerCase() ?? "";
           const categoryId = categoryBySlug.get(hint) ?? categoryByName.get(hint) ?? null;
@@ -337,7 +378,7 @@ export async function extractBrandCatalogue(
             designer_name: extracted.designerName,
             name: extracted.name,
             slug: await uniqueCatalogueSlug(run.brand_id, extracted.name),
-            source_url: url,
+            source_url: sourceUrl,
             description: extracted.description ?? null,
             materials: extracted.materials ?? null,
             dimensions: extracted.dimensions ?? null,
@@ -360,6 +401,7 @@ export async function extractBrandCatalogue(
               stage: "product_save",
               outcome: "duplicate",
               url,
+              canonicalUrl: sourceUrl !== url ? sourceUrl : undefined,
               reason: "A catalogue record with this source URL already exists.",
             });
           } else {
@@ -368,6 +410,7 @@ export async function extractBrandCatalogue(
               stage: "product_save",
               outcome: "added",
               url,
+              canonicalUrl: sourceUrl !== url ? sourceUrl : undefined,
               counts: { images: images.length },
             });
           }

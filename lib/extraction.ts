@@ -4,7 +4,13 @@ import { withGroqRetry } from "@/lib/groq/client";
 import { tavilyExtract } from "@/lib/tavily";
 import { tokensFrom } from "@/lib/textTokens";
 import { absolutize, fetchPageSignals, hasUsableSignal, extractOrgNames, looksLikeSiteOwner, type PageSignals } from "@/lib/pageSignals";
-import { CATEGORY_SLUGS, guessCategorySlug, refineCategoryHint, type CategorySlug } from "@/lib/productCategory";
+import {
+  CATEGORY_SLUGS,
+  categoryFromProductUrl,
+  guessCategorySlug,
+  refineCategoryHint,
+  type CategorySlug,
+} from "@/lib/productCategory";
 import type { ExtractedProductData } from "@/lib/types";
 
 const extractionSchema = z.object({
@@ -298,10 +304,10 @@ function productFromOgOrTitle(
   ) return null;
 
   const description = signals.metaDescription ?? null;
-  const categoryHint = refineCategoryHint(
+  const categoryHint = categoryFromProductUrl(finalUrl) ?? refineCategoryHint(
     guessCategorySlug(name),
     name,
-    [description, finalUrl]
+    [description, finalUrl],
   );
   return { name, description, categoryHint };
 }
@@ -395,13 +401,17 @@ export async function extractProductFromUrl(
       // literal about product type (e.g. ".../bebitalia_sofa_Charles_01.jpg")
       // — a useful last-resort signal when the visible text never says it.
       const imageText = imageUrls.join(" ");
-      const categoryHint = refineCategoryHint(fromJsonLd.categoryHint, fromJsonLd.name, [
-        fromJsonLd.description,
-        signals.metaDescription,
-        signals.title,
-        signals.textSnippet,
-        imageText,
-      ]);
+      const categoryHint = categoryFromProductUrl(finalUrl) ?? refineCategoryHint(
+        fromJsonLd.categoryHint,
+        fromJsonLd.name,
+        [
+          fromJsonLd.description,
+          signals.metaDescription,
+          signals.title,
+          signals.textSnippet,
+          imageText,
+        ],
+      );
       return {
         name: fromJsonLd.name,
         brandName,
@@ -521,14 +531,18 @@ export async function extractProductFromUrl(
   // images we have are generic (brand banner, lifestyle shot, etc.), so
   // whatever we pick should get a vision sanity-check before being saved.
   const imagesLowConfidence = ranked.length === 0 || ranked[0].score < 12;
-  const categoryHint = refineCategoryHint(object.categoryHint, object.name, [
-    object.description,
-    signals?.metaDescription,
-    signals?.title,
-    signals?.textSnippet,
-    fallbackText,
-    imageUrls.join(" "),
-  ]);
+  const categoryHint = categoryFromProductUrl(finalUrl) ?? refineCategoryHint(
+    object.categoryHint,
+    object.name,
+    [
+      object.description,
+      signals?.metaDescription,
+      signals?.title,
+      signals?.textSnippet,
+      fallbackText,
+      imageUrls.join(" "),
+    ],
+  );
 
   return {
     name: object.name,
