@@ -13,7 +13,7 @@ const MAX_TEXTAREA_HEIGHT = 200;
 // their position, generous enough to absorb sub-pixel/rounding jitter.
 const NEAR_BOTTOM_PX = 120;
 
-export function ChatPanel() {
+export function ChatPanel({ onCollapse }: { onCollapse: () => void }) {
   const { messages, activeConversationId, sending, sendMessage, stopGeneration, openProduct, newChat } = useChat();
   const [input, setInput] = useState("");
   const [analyzing, setAnalyzing] = useState(false);
@@ -122,6 +122,18 @@ export function ChatPanel() {
         </div>
         <div className="flex items-center gap-1.5">
           <button
+            type="button"
+            onClick={onCollapse}
+            aria-label="Collapse chat sidebar"
+            title="Collapse chat sidebar"
+            className="flex h-8 w-8 items-center justify-center rounded-full border border-border text-muted transition-colors hover:border-accent/50 hover:text-foreground"
+          >
+            <svg className="h-4 w-4" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+              <path d="M15 18l-6-6 6-6" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+            </svg>
+          </button>
+          <button
+            type="button"
             onClick={newChat}
             title="New chat"
             className="flex h-8 w-8 items-center justify-center rounded-full border border-border text-muted transition-colors hover:border-accent/50 hover:text-foreground"
@@ -129,6 +141,7 @@ export function ChatPanel() {
             +
           </button>
           <button
+            type="button"
             onClick={() => setShowHistory(true)}
             title="Conversation history"
             className="flex h-8 w-8 items-center justify-center rounded-full border border-border text-muted transition-colors hover:border-accent/50 hover:text-foreground"

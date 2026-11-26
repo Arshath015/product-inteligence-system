@@ -140,22 +140,6 @@ function Shell({ children }: { children: React.ReactNode }) {
           >
             Switch project
           </Link>
-          <button
-            onClick={() => setCollapsed((c) => !c)}
-            aria-label={collapsed ? "Expand chat sidebar" : "Collapse chat sidebar"}
-            className="hidden h-8 w-8 items-center justify-center rounded-full border border-border text-muted transition-colors hover:border-accent/50 hover:text-foreground sm:flex"
-            title={collapsed ? "Expand chat sidebar" : "Collapse chat sidebar"}
-          >
-            <svg className="h-4 w-4" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-              <path
-                d={collapsed ? "M9 18l6-6-6-6" : "M15 18l-6-6 6-6"}
-                stroke="currentColor"
-                strokeWidth="1.8"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-              />
-            </svg>
-          </button>
           <div className="flex gap-2 sm:hidden">
             <button
               onClick={() => setMobileView("catalogue")}
@@ -216,7 +200,7 @@ function Shell({ children }: { children: React.ReactNode }) {
             </div>
           ) : (
             <div className="h-full min-w-0 w-full flex-shrink-0 sm:h-full">
-              <ChatPanel />
+              <ChatPanel onCollapse={() => setCollapsed(true)} />
             </div>
           )}
         </aside>
