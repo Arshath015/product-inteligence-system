@@ -13,6 +13,7 @@ import { CatalogCacheProvider } from "@/components/project/CatalogCacheContext";
 const MIN_WIDTH = 320;
 const MAX_WIDTH = 640;
 const DEFAULT_WIDTH = 400;
+const COLLAPSED_WIDTH = 60;
 const STORAGE_KEY = "altossa-chat-width";
 const COLLAPSED_KEY = "altossa-chat-collapsed";
 
@@ -91,6 +92,8 @@ function Shell({ children }: { children: React.ReactNode }) {
     </Link>
   );
 
+  const collapsedOnDesktop = collapsed && mobileView !== "chat";
+
   return (
     <div className="flex h-screen flex-col bg-background">
       <header className="flex flex-shrink-0 items-center justify-between border-b border-border bg-header px-6 py-3">
@@ -139,10 +142,19 @@ function Shell({ children }: { children: React.ReactNode }) {
           </Link>
           <button
             onClick={() => setCollapsed((c) => !c)}
-            className="hidden items-center gap-1.5 rounded-full border border-border px-3 py-1.5 text-xs text-muted transition-colors hover:border-accent/50 hover:text-foreground sm:flex"
-            title={collapsed ? "Show chat" : "Hide chat"}
+            aria-label={collapsed ? "Expand chat sidebar" : "Collapse chat sidebar"}
+            className="hidden h-8 w-8 items-center justify-center rounded-full border border-border text-muted transition-colors hover:border-accent/50 hover:text-foreground sm:flex"
+            title={collapsed ? "Expand chat sidebar" : "Collapse chat sidebar"}
           >
-            {collapsed ? "Show chat ›" : "‹ Hide chat"}
+            <svg className="h-4 w-4" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+              <path
+                d={collapsed ? "M9 18l6-6-6-6" : "M15 18l-6-6 6-6"}
+                stroke="currentColor"
+                strokeWidth="1.8"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
+            </svg>
           </button>
           <div className="flex gap-2 sm:hidden">
             <button
@@ -167,17 +179,49 @@ function Shell({ children }: { children: React.ReactNode }) {
 
       <div className="flex min-h-0 flex-1">
         <aside
-          style={{ width: collapsed ? 0 : chatWidth, willChange: "width" }}
+          style={{ width: collapsedOnDesktop ? COLLAPSED_WIDTH : chatWidth, willChange: "width" }}
           className={`min-w-0 flex-shrink-0 overflow-hidden border-r border-border bg-chat-panel transition-[width] duration-150 ease-out ${
             mobileView === "chat" ? "!w-full flex" : "hidden sm:flex"
           }`}
         >
-          <div style={{ width: collapsed ? chatWidth : "100%" }} className="h-full min-w-0 flex-shrink-0 sm:h-full">
-            <ChatPanel />
-          </div>
+          {collapsedOnDesktop ? (
+            <div className="flex h-full w-full flex-col items-center gap-4 py-4">
+              <button
+                type="button"
+                onClick={() => setCollapsed(false)}
+                aria-label="Expand chat sidebar"
+                title="Expand chat sidebar"
+                className="flex h-9 w-9 items-center justify-center rounded-lg border border-border text-muted transition-colors hover:border-accent/50 hover:text-foreground"
+              >
+                <svg className="h-4 w-4" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                  <path d="M9 18l6-6-6-6" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+                </svg>
+              </button>
+              <div className="flex h-9 w-9 items-center justify-center rounded-lg border border-border font-serif text-sm text-foreground" title="ALTOSSA">
+                A
+              </div>
+              <div className="h-px w-7 bg-border" />
+              <button
+                type="button"
+                onClick={() => setCollapsed(false)}
+                aria-label="Open chat panel"
+                title="Open chat panel"
+                className="flex h-9 w-9 items-center justify-center rounded-lg text-muted transition-colors hover:bg-background hover:text-foreground"
+              >
+                <svg className="h-4 w-4" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                  <path d="M20 11.5a7.5 7.5 0 0 1-7.5 7.5H5l1.8-3.1A7.5 7.5 0 1 1 20 11.5Z" stroke="currentColor" strokeWidth="1.7" strokeLinejoin="round" />
+                  <path d="M8.5 11.5h7M8.5 14.5h4" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" />
+                </svg>
+              </button>
+            </div>
+          ) : (
+            <div className="h-full min-w-0 w-full flex-shrink-0 sm:h-full">
+              <ChatPanel />
+            </div>
+          )}
         </aside>
 
-        {!collapsed && (
+        {!collapsedOnDesktop && (
           <div
             onMouseDown={onDragStart}
             className="hidden w-1.5 flex-shrink-0 cursor-col-resize bg-transparent transition-colors hover:bg-accent/30 sm:block"
