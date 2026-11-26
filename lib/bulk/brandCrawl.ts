@@ -3,12 +3,16 @@ import type { PageSignals } from "@/lib/pageSignals";
 import {
   discoverProductLinks,
   discoverCollectionLinks,
+  discoverPotentialCollectionLinks,
   discoverPaginationLinks,
+  hasUnlinkedLoadMoreControl,
   discoverFromSitemap,
   isProductPageUrl,
+  isProductListingPage,
   getLocalePrefix,
 } from "@/lib/bulk/discoverLinks";
 import { tavilySearch } from "@/lib/tavily";
+import type { BrandImportDiagnostic } from "@/lib/bulk/brandImportDiagnostics";
 
 export interface BrandCrawlResult {
   productUrls: string[];
@@ -33,17 +37,18 @@ function belongsToBrand(url: string, host: string): boolean {
   return candidateHost === host || candidateHost.endsWith(`.${host}`);
 }
 
-async function fetchSignalsSafe(url: string): Promise<PageSignals | null> {
+async function fetchSignalsSafe(url: string): Promise<{ signals: PageSignals | null; reason: string | null }> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
-    return await Promise.race([
+    const signals = await Promise.race([
       fetchPageSignals(url),
-      new Promise<null>((resolve) => {
-        timer = setTimeout(() => resolve(null), COLLECTION_TIMEOUT_MS);
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`Timed out after ${COLLECTION_TIMEOUT_MS}ms.`)), COLLECTION_TIMEOUT_MS);
       }),
     ]);
-  } catch {
-    return null;
+    return { signals, reason: null };
+  } catch (error) {
+    return { signals: null, reason: error instanceof Error ? error.message : String(error) };
   } finally {
     if (timer) clearTimeout(timer);
   }
@@ -77,7 +82,11 @@ export async function crawlBrandCatalogue(
   baseUrl: string,
   homepageSignals: PageSignals | null,
   onProgress?: (msg: string) => void,
-  opts?: { maxProducts?: number; maxCollections?: number },
+  opts?: {
+    maxProducts?: number;
+    maxCollections?: number;
+    onDiagnostic?: (diagnostic: BrandImportDiagnostic) => void;
+  },
 ): Promise<BrandCrawlResult> {
   const maxProducts = opts?.maxProducts ?? 60;
   const maxCollections = opts?.maxCollections ?? 15;
@@ -87,6 +96,7 @@ export async function crawlBrandCatalogue(
 
   const seen = new Set<string>();
   const productUrls: string[] = [];
+  const listingPageUrls = new Set<string>();
   // URLs confirmed live by appearing in an actual category page listing.
   // These are always reachable, unlike some sitemap entries that point to
   // discontinued/renamed product pages that now 404. Confirmed URLs are
@@ -96,6 +106,8 @@ export async function crawlBrandCatalogue(
   let collectionsCrawled = 0;
   let tavilyFallback = false;
   let truncated = false;
+  const onDiagnostic = opts?.onDiagnostic;
+  onDiagnostic?.({ stage: "crawl_started", outcome: "started", url: baseUrl });
 
   function matchesPreferredLocale(url: string): boolean {
     if (!enforceLocale) return true;
@@ -128,16 +140,41 @@ export async function crawlBrandCatalogue(
 
   // ── 1. Sitemap ─────────────────────────────────────────────────────────────
   onProgress?.(`Checking ${host} sitemap…`);
+  let sitemapFailure: string | null = null;
   const sitemapResult = await discoverFromSitemap(
     baseUrl,
     maxProducts,
     maxCollections,
     homepageSignals?.finalUrl ?? baseUrl,
-  ).catch(() => ({
-    productUrls: [] as string[],
-    collectionUrls: [] as string[],
-    truncated: false,
-  }));
+    (url, outcome, reason) => {
+      if (outcome !== "readable") {
+        onDiagnostic?.({ stage: "sitemap_fetch", outcome, url, reason });
+      }
+    },
+  ).catch((error: unknown) => {
+    sitemapFailure = error instanceof Error ? error.message : String(error);
+    return {
+      productUrls: [] as string[],
+      collectionUrls: [] as string[],
+      truncated: false,
+    };
+  });
+  onDiagnostic?.({
+    stage: "sitemap_discovery",
+    outcome: sitemapResult.productUrls.length > 0 || sitemapResult.collectionUrls.length > 0
+      ? "found"
+      : sitemapFailure ? "failed" : "empty",
+    url: baseUrl,
+    counts: {
+      products: sitemapResult.productUrls.length,
+      collections: sitemapResult.collectionUrls.length,
+      truncated: sitemapResult.truncated,
+    },
+    urls: sitemapResult.productUrls.slice(0, 500),
+    reason: sitemapResult.productUrls.length === 0 && sitemapResult.collectionUrls.length === 0
+      ? sitemapFailure ?? "No accessible sitemap contained product or collection URLs."
+      : undefined,
+  });
 
   if (!enforceLocale) {
     const homepageLocale = getLocalePrefix(homepageSignals?.finalUrl ?? "");
@@ -188,9 +225,17 @@ export async function crawlBrandCatalogue(
     const collectionCandidates = new Set<string>();
 
     if (homepageSignals) {
-      for (const u of discoverProductLinks(homepageSignals, 20)) addUrl(u);
-      for (const u of discoverCollectionLinks(homepageSignals, maxCollections)) {
+      for (const u of discoverProductLinks(homepageSignals, maxProducts + 1)) addUrl(u);
+      const homepageCollections = discoverCollectionLinks(homepageSignals, maxCollections);
+      for (const u of homepageCollections) {
         if (matchesPreferredLocale(u)) collectionCandidates.add(u);
+      }
+      for (const u of discoverPotentialCollectionLinks(homepageSignals, maxCollections)) {
+        if (collectionCandidates.size >= maxCollections) break;
+        if (matchesPreferredLocale(u)) collectionCandidates.add(u);
+      }
+      if (isProductListingPage(homepageSignals) && matchesPreferredLocale(homepageSignals.finalUrl)) {
+        collectionCandidates.add(homepageSignals.finalUrl);
       }
     }
 
@@ -212,18 +257,32 @@ export async function crawlBrandCatalogue(
       await runPool(batch, COLLECTION_CONCURRENCY, async (collUrl) => {
         if (visited.has(collUrl) || productUrls.length >= maxProducts) return;
         visited.add(collUrl);
-        const signals = await fetchSignalsSafe(collUrl);
-        if (!signals) return;
+        const fetched = await fetchSignalsSafe(collUrl);
+        const signals = fetched.signals;
+        if (!signals) {
+          onDiagnostic?.({
+            stage: "collection_fetch",
+            outcome: "failed",
+            url: collUrl,
+            reason: fetched.reason ?? "Could not read the page.",
+          });
+          return;
+        }
         collectionsCrawled++;
+        if (isProductListingPage(signals)) listingPageUrls.add(collUrl);
 
-        const pageProducts = discoverProductLinks(signals, 40);
+        const pageProducts = discoverProductLinks(signals, maxProducts + 1);
+        const beforeProducts = productUrls.length;
         let added = 0;
         for (const u of pageProducts) {
           confirmedByNav.add(u);
           if (addUrl(u)) added++;
         }
 
-        for (const nextPage of discoverPaginationLinks(signals, 5)) {
+        const paginationLinks = discoverPaginationLinks(signals, Math.min(20, maxCollections));
+        const unlinkedLoadMore = hasUnlinkedLoadMoreControl(signals) && paginationLinks.length === 0;
+        if (unlinkedLoadMore) truncated = true;
+        for (const nextPage of paginationLinks) {
           if (matchesPreferredLocale(nextPage) && !queued.has(nextPage) && !visited.has(nextPage)) {
             queued.add(nextPage);
             queue.unshift(nextPage);
@@ -232,12 +291,32 @@ export async function crawlBrandCatalogue(
 
         // Listings can contain both products and links to nested categories.
         // Follow those category links too, but keep the crawl bounded.
-        for (const sub of discoverCollectionLinks(signals, 5)) {
+        const subCollections = [
+          ...discoverCollectionLinks(signals, 10),
+          ...discoverPotentialCollectionLinks(signals, 10),
+        ];
+        for (const sub of subCollections) {
           if (matchesPreferredLocale(sub) && !queued.has(sub) && !visited.has(sub)) {
             queued.add(sub);
             queue.push(sub);
           }
         }
+        onDiagnostic?.({
+          stage: "collection_discovery",
+          outcome: "processed",
+          url: collUrl,
+          counts: {
+            candidates: pageProducts.length,
+            newlyDiscovered: productUrls.length - beforeProducts,
+            pagination: paginationLinks.length,
+            nestedCollections: subCollections.length,
+            unlinkedLoadMore,
+          },
+          reason: unlinkedLoadMore
+            ? "The page exposes a load-more control without a public next-page URL; further items were not fetched."
+            : undefined,
+          urls: pageProducts.slice(0, 500),
+        });
 
         if (added > 0) {
           let pathname = "catalogue listing";
@@ -247,6 +326,17 @@ export async function crawlBrandCatalogue(
       });
     }
     if (queue.length > 0) truncated = true;
+
+    if (listingPageUrls.size > 0) {
+      productUrls.splice(0, productUrls.length, ...productUrls.filter((url) => !listingPageUrls.has(url)));
+      for (const url of listingPageUrls) {
+        onDiagnostic?.({
+          stage: "listing_page_classification",
+          outcome: "collection",
+          url,
+        });
+      }
+    }
 
     // Promote nav-confirmed URLs to the front so ingestion tries live pages first.
     // Sitemap-only URLs (which may 404) go after the confirmed batch.
@@ -295,10 +385,29 @@ export async function crawlBrandCatalogue(
           }
         }
       }
-    } catch {
-      // The HTML and sitemap paths remain available when Tavily is unavailable.
+    } catch (error) {
+      onDiagnostic?.({
+        stage: "search_fallback",
+        outcome: "failed",
+        url: baseUrl,
+        reason: error instanceof Error ? error.message : String(error),
+      });
     }
   }
+
+  onDiagnostic?.({
+    stage: "crawl_finished",
+    outcome: truncated ? "truncated" : "complete",
+    url: baseUrl,
+    counts: {
+      products: productUrls.length,
+      collectionsCrawled,
+      sitemapUsed,
+      tavilyFallback,
+      truncated,
+    },
+    urls: productUrls.slice(0, 1000),
+  });
 
   return {
     productUrls,

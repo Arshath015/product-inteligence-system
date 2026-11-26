@@ -1,5 +1,6 @@
 import * as cheerio from "cheerio";
 import { gunzipSync } from "node:zlib";
+import type { AnyNode } from "domhandler";
 import { BROWSER_HEADERS } from "@/lib/pageSignals";
 import type { PageSignals } from "@/lib/pageSignals";
 import {
@@ -19,6 +20,85 @@ function sameHost(a: string, b: string): boolean {
   try {
     return new URL(a).hostname.replace(/^www\./, "") === new URL(b).hostname.replace(/^www\./, "");
   } catch { return false; }
+}
+
+const SITE_CHROME_PATTERN = /^(?:nav|navigation|header|footer|breadcrumb|language|search)$/i;
+const PRODUCT_CARD_PATTERN = /(?:product|item|card|tile|result)/i;
+const MENU_CONTAINER_PATTERN = /^(?:container-menu|main-prodotti-menu|inner-menu-mobile|sub-menu)(?:-|$)/i;
+
+function isInsideSiteChrome($: ReturnType<typeof cheerio.load>, element: AnyNode): boolean {
+  let node = $(element);
+  while (node.length) {
+    const tagName = node[0]?.type === "tag" ? (node[0] as { name?: string }).name : "";
+    if (tagName && /^(?:nav|header|footer)$/i.test(tagName)) return true;
+    const classes = `${node.attr("id") ?? ""} ${node.attr("class") ?? ""}`.split(/\s+/);
+    if (classes.some((token) => SITE_CHROME_PATTERN.test(token))) return true;
+    if (classes.some((token) => MENU_CONTAINER_PATTERN.test(token))) return true;
+    if (SITE_CHROME_PATTERN.test(node.attr("role") ?? "")) return true;
+    node = node.parent();
+  }
+  return false;
+}
+
+function productCardLinks(signals: PageSignals): string[] {
+  const $ = cheerio.load(signals.html);
+  const found = new Set<string>();
+  const add = (rawUrl: string | undefined, element: AnyNode) => {
+    if (!rawUrl || isInsideSiteChrome($, element)) return;
+    const node = $(element);
+    const identity = `${node.attr("id") ?? ""} ${node.attr("class") ?? ""}`;
+    if (!node.is("a") && !node.find("img").length && !PRODUCT_CARD_PATTERN.test(identity)) return;
+    try {
+      const url = new URL(rawUrl, signals.finalUrl).toString();
+      if (sameHost(url, signals.finalUrl) && isProductPageUrl(url)) found.add(url);
+    } catch {
+      // Ignore malformed page-provided URLs.
+    }
+  };
+
+  $("[data-url], [data-href], [data-link], [data-product-url]").each((_, element) => {
+    const node = $(element);
+    add(
+      node.attr("data-product-url") ?? node.attr("data-url") ?? node.attr("data-href") ?? node.attr("data-link"),
+      element,
+    );
+  });
+  $("a[href]").each((_, element) => {
+    const node = $(element);
+    if (isInsideSiteChrome($, element)) return;
+    let container = node;
+    let cardSignal = false;
+    for (let depth = 0; depth < 4 && container.length; depth++, container = container.parent()) {
+      const identity = `${container.attr("id") ?? ""} ${container.attr("class") ?? ""}`;
+      const tagName = container[0]?.type === "tag" ? (container[0] as { name?: string }).name : "";
+      if (
+        container.find("img").length > 0 ||
+        PRODUCT_CARD_PATTERN.test(identity) ||
+        /^(?:main|article)$/i.test(tagName ?? "")
+      ) {
+        cardSignal = true;
+        break;
+      }
+    }
+    if (cardSignal) add(node.attr("href"), element);
+  });
+  return [...found];
+}
+
+/** Detects listing pages from structured list data or repeated product cards. */
+export function isProductListingPage(signals: PageSignals): boolean {
+  const listTypes = new Set(["collectionpage", "itemlist", "offercatalog"]);
+  if (signals.jsonLdTypes.some((type) => listTypes.has(type.toLowerCase()))) return true;
+
+  if (productCardLinks(signals).length < 3) return false;
+  const $ = cheerio.load(signals.html);
+  const detailEvidence = $(
+    '[itemtype*="Product" i], [itemprop="sku" i], [itemprop="offers" i], ' +
+      '[class*="product-detail" i], [class*="product-gallery" i], [class*="gallery-product" i], ' +
+      '[class*="single-product" i], [class*="pdp" i]',
+  ).length > 0;
+  const productGallery = $(".gallery-element, [class*='product-gallery' i], [class*='gallery-product' i]").length >= 2;
+  return !detailEvidence && !productGallery;
 }
 
 // ── public functions ─────────────────────────────────────────────────────────
@@ -42,7 +122,7 @@ export function discoverProductLinks(signals: PageSignals, limit = 20): string[]
     found.push(href);
   };
 
-  for (const { href } of signals.links) {
+  for (const href of productCardLinks(signals)) {
     if (found.length >= limit) break;
     add(href);
   }
@@ -141,6 +221,27 @@ export function discoverCollectionLinks(signals: PageSignals, limit = 15): strin
   return found;
 }
 
+/**
+ * Returns ambiguous one-segment catalogue routes for bounded page-type
+ * inspection. Their names are intentionally not compared with a category list:
+ * the fetched page determines whether each route is a listing or a product.
+ */
+export function discoverPotentialCollectionLinks(signals: PageSignals, limit = 15): string[] {
+  const productCards = new Set(productCardLinks(signals));
+  const found = new Set<string>();
+
+  for (const { href } of signals.links) {
+    if (found.size >= limit || !sameHost(href, signals.finalUrl) || productCards.has(href)) continue;
+    const segments = normalizedSegs(href);
+    const productIndex = segments.findIndex((segment) => PRODUCT_WORD_SET.has(segment));
+    if (productIndex === -1 || segments.length !== productIndex + 2) continue;
+    if (segments.some(isSkippedSegment) || isCollectionPathSegment(segments.at(-1) ?? "")) continue;
+    if (!isProductPageUrl(href)) continue;
+    found.add(href);
+  }
+  return [...found];
+}
+
 /** Finds a small number of explicit next-page links, never arbitrary query URLs. */
 export function discoverPaginationLinks(signals: PageSignals, limit = 5): string[] {
   const $ = cheerio.load(signals.html);
@@ -156,13 +257,50 @@ export function discoverPaginationLinks(signals: PageSignals, limit = 5): string
   };
 
   $('a[rel~="next"], link[rel~="next"]').each((_, el) => add($(el).attr("href"), true));
+  $('[class*="pagination" i], [id*="pagination" i], nav[aria-label*="pagination" i], .page-numbers')
+    .find("a[href]")
+    .each((_, el) => add($(el).attr("href"), true));
   $("a[href]").each((_, el) => {
     const anchor = $(el);
     const href = anchor.attr("href");
     const text = `${anchor.text()} ${anchor.attr("aria-label") ?? ""}`.trim();
-    if (/^(next|older|more products|load more|›|»|→)$/i.test(text)) add(href, false);
+    if (/^(?:next|older|more products|(?:load|show|view) more(?: products| items| results)?|›|»|→)$/i.test(text)) {
+      add(href, false);
+    }
+  });
+  $("button, [role='button']").each((_, el) => {
+    const button = $(el);
+    const text = `${button.text()} ${button.attr("aria-label") ?? ""}`.trim();
+    if (!/^(?:next|older|more products|(?:load|show|view) more(?: products| items| results)?|›|»|→)$/i.test(text)) return;
+    add(
+      button.attr("data-next-url") ??
+        button.attr("data-url") ??
+        button.attr("data-href") ??
+        button.find("a[href]").attr("href"),
+      true,
+    );
   });
   return [...found].slice(0, limit);
+}
+
+/** Identifies explicit load-more controls that have no navigable URL to follow. */
+export function hasUnlinkedLoadMoreControl(signals: PageSignals): boolean {
+  const $ = cheerio.load(signals.html);
+  let found = false;
+  $("button, [role='button']").each((_, el) => {
+    const button = $(el);
+    const text = `${button.text()} ${button.attr("aria-label") ?? ""}`.trim();
+    if (!/^(?:load|show|view) more(?: products| items| results)?$/i.test(text)) return;
+    if (
+      button.attr("data-next-url") ||
+      button.attr("data-url") ||
+      button.attr("data-href") ||
+      button.find("a[href]").length
+    ) return;
+    found = true;
+    return false;
+  });
+  return found;
 }
 
 /**
@@ -202,6 +340,7 @@ export async function discoverFromSitemap(
   limit = 80,
   collectionLimit = 20,
   localeUrl = baseUrl,
+  onFetch?: (url: string, outcome: "readable" | "http_error" | "fetch_error", reason?: string) => void,
 ): Promise<{ productUrls: string[]; collectionUrls: string[]; truncated: boolean }> {
   let origin: string;
   try { origin = new URL(baseUrl).origin; } catch { return { productUrls: [], collectionUrls: [], truncated: false }; }
@@ -215,13 +354,19 @@ export async function discoverFromSitemap(
     const timer = setTimeout(() => ctrl.abort(), 8000);
     try {
       const res = await fetch(url, { headers: BROWSER_HEADERS, signal: ctrl.signal });
-      if (!res.ok) return null;
+      if (!res.ok) {
+        onFetch?.(url, "http_error", `HTTP ${res.status}`);
+        return null;
+      }
       const bytes = Buffer.from(await res.arrayBuffer());
       if (/\.gz(?:\?|$)/i.test(url) || /application\/gzip/i.test(res.headers.get("content-type") ?? "")) {
+        onFetch?.(url, "readable");
         return gunzipSync(bytes).toString("utf8");
       }
+      onFetch?.(url, "readable");
       return bytes.toString("utf8");
-    } catch {
+    } catch (error) {
+      onFetch?.(url, "fetch_error", error instanceof Error ? error.message : String(error));
       return null;
     } finally {
       clearTimeout(timer);
@@ -398,6 +543,7 @@ export async function discoverFromSitemap(
 
   const productUrls: string[] = [];
   const collectionUrls: string[] = [];
+  const collectionCandidates: string[] = [];
   let truncated = subSitemapsTruncated;
 
   for (const loc of [...sortedLocs, ...scopedCollectionLocs]) {
@@ -414,13 +560,44 @@ export async function discoverFromSitemap(
 
     if (isProductPage && productUrls.length < limit) {
       productUrls.push(loc);
+      collectionCandidates.push(...collectionAncestorsFromProductUrl(loc));
     } else if (isProductPage) {
       truncated = true;
     } else if (isCollectionPage) {
-      if (collectionUrls.length < collectionLimit) collectionUrls.push(loc);
-      else truncated = true;
+      collectionCandidates.push(loc);
     }
   }
 
+  for (const url of new Set(collectionCandidates)) {
+    if (collectionUrls.length >= collectionLimit) {
+      truncated = true;
+      break;
+    }
+    collectionUrls.push(url);
+  }
+
   return { productUrls, collectionUrls, truncated };
+}
+
+/** Infers listing-page ancestors from nested product URLs, without taxonomy names. */
+export function collectionAncestorsFromProductUrl(url: string): string[] {
+  try {
+    const parsed = new URL(url);
+    const rawSegments = parsed.pathname.split("/").filter(Boolean);
+    const segments = normalizedSegs(url);
+    const productIndex = segments.findIndex((segment) => PRODUCT_WORD_SET.has(segment));
+    if (productIndex === -1) return [];
+
+    const ancestors: string[] = [];
+    for (let index = productIndex + 1; index < rawSegments.length - 1; index++) {
+      const ancestor = new URL(parsed.toString());
+      ancestor.pathname = `/${rawSegments.slice(0, index + 1).join("/")}/`;
+      ancestor.search = "";
+      ancestor.hash = "";
+      ancestors.push(ancestor.toString());
+    }
+    return ancestors;
+  } catch {
+    return [];
+  }
 }

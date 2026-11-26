@@ -1,4 +1,5 @@
 import type { PageSignals } from "@/lib/pageSignals";
+import { isProductListingPage, isProductPageUrl } from "@/lib/bulk/discoverLinks";
 
 export type ContentKind =
   | "pinterest"
@@ -63,11 +64,7 @@ export function classifyFromPath(url: string): ContentKind | null {
   }
   const productIdx = segs.findIndex((s) => PRODUCT_PATH_WORDS.includes(s));
   if (productIdx !== -1) {
-    // Same reasoning: "/product/poodle-armchair/" is an item page no matter
-    // how short the slug is. A bare "/products/" with nothing after it is
-    // the listing root.
-    const hasSlugAfter = productIdx < segs.length - 1;
-    return hasSlugAfter ? "product" : "collection";
+    return isProductPageUrl(url) ? "product" : "collection";
   }
   if (segs.length === 0) return null; // homepage — ambiguous, needs page signals
   // A single long hyphenated slug directly off root reads as a product detail page.
@@ -95,6 +92,8 @@ function sameHost(a: string, b: string): boolean {
  * homepage. No LLM call anywhere in this function.
  */
 export function classifyFromSignals(url: string, signals: PageSignals | null): ContentKind {
+  if (signals && isProductListingPage(signals)) return "collection";
+
   const fromPath = classifyFromPath(url);
   if (fromPath) return fromPath;
 

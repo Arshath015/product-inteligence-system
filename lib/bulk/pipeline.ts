@@ -56,7 +56,7 @@ export interface BulkIngestSummary {
 
 const CONCURRENCY = 4;
 const FETCH_TIMEOUT_MS = 15_000;
-const COLLECTION_DISCOVERY_LIMIT = 20;
+const COLLECTION_DISCOVERY_LIMIT = 200;
 const BRAND_MAX_PRODUCTS = 5000;
 const BRAND_MAX_INGEST = 50;  // per-run ingestion cap so we stay within Vercel's 300s timeout
 const BRAND_MAX_COLLECTIONS = 60;
@@ -260,7 +260,7 @@ async function processOneUrl(
   }
 
   const signals = await fetchSignalsWithTimeout(url);
-  const kind = pathKind ?? classifyFromSignals(url, signals);
+  const kind = signals ? classifyFromSignals(url, signals) : pathKind ?? classifyFromSignals(url, null);
   onPhase?.(`Classified as ${KIND_LABEL[kind]} (${host}) — checking catalogue for duplicates…`);
 
   switch (kind) {
@@ -285,7 +285,9 @@ async function processOneUrl(
 
     case "collection":
     case "gallery": {
-      let discoveredUrls = signals ? discoverProductLinks(signals, COLLECTION_DISCOVERY_LIMIT) : [];
+      const candidates = signals ? discoverProductLinks(signals, COLLECTION_DISCOVERY_LIMIT + 1) : [];
+      const discoveryCapped = candidates.length > COLLECTION_DISCOVERY_LIMIT;
+      let discoveredUrls = candidates.slice(0, COLLECTION_DISCOVERY_LIMIT);
       if (discoveredUrls.length === 0) {
         onPhase?.(`No product links found directly on ${host} — searching for its products…`);
         discoveredUrls = await discoverViaSearch(url);
@@ -294,12 +296,16 @@ async function processOneUrl(
         const discovered = await processDiscovered(projectId, discoveredUrls);
         const added = discovered.filter((d) => d.status === "product_created").length;
         const matched = discovered.filter((d) => d.status === "product_duplicate").length;
-        if (added + matched > 0) {
+        const failed = discovered.filter((d) => d.status === "failed").length;
+        if (discovered.length > 0) {
           return {
             url,
             kind,
             status: kind === "collection" ? "collection_processed" : "gallery_saved",
-            message: `Found ${discoveredUrls.length} product link(s) on this page — added ${added} new product(s).`,
+            message:
+              `Discovered ${discoveredUrls.length}${discoveryCapped ? "+" : ""} product link(s); ` +
+              `processed ${discovered.length}, added ${added}, duplicates ${matched}, failed ${failed}.` +
+              (discoveryCapped ? ` The ${COLLECTION_DISCOVERY_LIMIT}-product page limit was reached; process this category again to continue.` : ""),
             discovered,
           };
         }
@@ -391,7 +397,7 @@ async function processOneUrl(
           ? ` All ${crawl.productUrls.length} discovered product URLs already in catalogue.`
           : "";
       const discoveryLimitNote = crawl.stats.truncated
-        ? ` Discovery reached the ${BRAND_MAX_PRODUCTS}-URL safety limit; more products may remain.`
+        ? " Discovery reached a configured product or collection crawl limit; more products may remain."
         : "";
 
       // How many URLs still need ingesting after this run's cap.

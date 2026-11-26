@@ -10,6 +10,8 @@ import { crawlBrandCatalogue } from "@/lib/bulk/brandCrawl";
 import { resolveBrandDetailed, resolveDesigner } from "@/lib/catalog";
 import { slugify } from "@/lib/slug";
 import { nanoid } from "nanoid";
+import { randomUUID } from "node:crypto";
+import { recordBrandImportDiagnostic } from "@/lib/bulk/brandImportDiagnostics";
 import type { ExtractedProductData } from "@/lib/types";
 
 export interface CatalogueProduct {
@@ -27,7 +29,7 @@ export interface CatalogueProduct {
 }
 
 export type ExtractProgressEvent =
-  | { type: "phase"; phase: "discovering" | "extracting" | "done"; message: string }
+  | { type: "phase"; phase: "discovering" | "extracting" | "done"; message: string; runId?: string }
   | {
       type: "discovered";
       runId: string;
@@ -134,12 +136,18 @@ export async function extractBrandCatalogue(
   }
 ): Promise<void> {
   const supabase = getSupabaseAdmin();
+  const resuming = Boolean(options?.runId);
+  let runId = options?.runId ?? randomUUID();
 
   try {
-    let runId = options?.runId;
     let run: BrandImportRun;
 
-    if (runId) {
+    if (resuming) {
+      await recordBrandImportDiagnostic(runId, {
+        stage: "run_resumed",
+        outcome: options?.retryFailed ? "retrying_failures" : "continuing",
+        url: brandUrl,
+      });
       const { data, error } = await supabase
         .from("library_import_runs")
         .select("*")
@@ -162,15 +170,25 @@ export async function extractBrandCatalogue(
         hasMore: run.next_index < run.product_urls.length,
       });
     } else {
-      onEvent({ type: "phase", phase: "discovering", message: "Fetching brand homepage…" });
+      onEvent({ type: "phase", phase: "discovering", message: "Fetching brand homepage…", runId });
 
-      const homepageSignals = await fetchPageSignals(brandUrl).catch(() => null);
+      let homepageFailure: string | null = null;
+      const homepageSignals = await fetchPageSignals(brandUrl).catch((error: unknown) => {
+        homepageFailure = error instanceof Error ? error.message : String(error);
+        return null;
+      });
       const usableHomepage = homepageSignals && hasUsableSignal(homepageSignals) ? homepageSignals : null;
       const brandNameGuess = (() => {
         const first = usableHomepage?.title?.split(/[|\-–—]/)[0]?.trim();
         if (first && first.length > 1 && first.length < 60) return first;
         try { return new URL(brandUrl).hostname.replace(/^www\./, "").split(".")[0]; } catch { return "Brand"; }
       })();
+      await recordBrandImportDiagnostic(runId, {
+        stage: "homepage_fetch",
+        outcome: usableHomepage ? "readable" : "unavailable",
+        url: brandUrl,
+        reason: usableHomepage ? undefined : homepageFailure ?? "Homepage did not return usable page signals.",
+      });
 
       onEvent({ type: "phase", phase: "discovering", message: `Scanning ${brandNameGuess} catalogue…` });
       const resolved = await resolveBrandForCatalogue(projectId, brandNameGuess, brandUrl);
@@ -180,7 +198,13 @@ export async function extractBrandCatalogue(
         brandUrl,
         usableHomepage,
         (msg) => onEvent({ type: "phase", phase: "discovering", message: msg }),
-        { maxProducts: 5000, maxCollections: 60 },
+        {
+          maxProducts: 5000,
+          maxCollections: 60,
+          onDiagnostic: (diagnostic) => {
+            void recordBrandImportDiagnostic(runId, diagnostic);
+          },
+        },
       );
       if (crawl.productUrls.length === 0) {
         throw new Error("No individual product pages were discovered. Try a category URL or retry after the site catalogue becomes available.");
@@ -189,6 +213,7 @@ export async function extractBrandCatalogue(
       const { data, error } = await supabase
         .from("library_import_runs")
         .insert({
+          id: runId,
           source_url: brandUrl,
           brand_name: resolved.name,
           brand_id: resolved.id,
@@ -202,6 +227,15 @@ export async function extractBrandCatalogue(
       if (error || !data) throw new Error(error?.message ?? "Could not create the brand import run.");
       run = data as BrandImportRun;
       runId = run.id;
+      await recordBrandImportDiagnostic(runId, {
+        stage: "run_created",
+        outcome: "ready",
+        url: brandUrl,
+        counts: {
+          discovered: run.product_urls.length,
+          truncated: run.discovery_truncated,
+        },
+      });
 
       onEvent({
         type: "discovered",
@@ -229,6 +263,11 @@ export async function extractBrandCatalogue(
       type: "phase",
       phase: "extracting",
       message: retrying ? `Retrying ${batch.length} failed page(s)…` : `Extracting ${batch.length} product page(s)…`,
+    });
+    await recordBrandImportDiagnostic(runId, {
+      stage: "extraction_batch_started",
+      outcome: retrying ? "retry" : "processing",
+      counts: { batch: batch.length, total: run.product_urls.length, retrying },
     });
 
     const { data: categories, error: categoriesError } = await supabase.from("categories").select("id, slug, name");
@@ -262,6 +301,12 @@ export async function extractBrandCatalogue(
           failedUrls.delete(url);
           delete failureDetails[url];
           markProcessed();
+          void recordBrandImportDiagnostic(runId, {
+            stage: "product_extraction",
+            outcome: "duplicate",
+            url,
+            reason: "Source URL already exists in the global brand catalogue.",
+          });
           if (existing.brand_id === run.brand_id) {
             onEvent({
               type: "product",
@@ -311,8 +356,20 @@ export async function extractBrandCatalogue(
           if (error) throw new Error(error.message);
           if (!saved) {
             duplicatesDelta++;
+            void recordBrandImportDiagnostic(runId, {
+              stage: "product_save",
+              outcome: "duplicate",
+              url,
+              reason: "A catalogue record with this source URL already exists.",
+            });
           } else {
             addedDelta++;
+            void recordBrandImportDiagnostic(runId, {
+              stage: "product_save",
+              outcome: "added",
+              url,
+              counts: { images: images.length },
+            });
           }
           failedUrls.delete(url);
           delete failureDetails[url];
@@ -334,6 +391,12 @@ export async function extractBrandCatalogue(
         failedUrls.add(url);
         failureDetails[url] = reason;
         markProcessed();
+        void recordBrandImportDiagnostic(runId, {
+          stage: "product_extraction",
+          outcome: "failed",
+          url,
+          reason,
+        });
         onEvent({
           type: "skip",
           url,
@@ -377,6 +440,19 @@ export async function extractBrandCatalogue(
     if (updateError || !updated) throw new Error(updateError?.message ?? "Could not save brand import progress.");
 
     const savedRun = updated as BrandImportRun;
+    await recordBrandImportDiagnostic(runId, {
+      stage: "extraction_batch_finished",
+      outcome: hasMore ? "continuation_available" : "complete",
+      counts: {
+        processed: savedRun.processed_count,
+        total: savedRun.product_urls.length,
+        added: savedRun.added_count,
+        duplicates: savedRun.duplicate_count,
+        failed: savedRun.failed_count,
+        hasMore,
+        retrying,
+      },
+    });
     const { data: currentBrand, error: brandError } = await supabase
       .from("brands")
       .select("id")
@@ -399,7 +475,14 @@ export async function extractBrandCatalogue(
       truncated: savedRun.discovery_truncated,
     });
   } catch (err) {
-    onEvent({ type: "error", message: err instanceof Error ? err.message : String(err) });
+    const message = err instanceof Error ? err.message : String(err);
+    await recordBrandImportDiagnostic(runId, {
+      stage: "run_error",
+      outcome: "failed",
+      url: brandUrl,
+      reason: message,
+    });
+    onEvent({ type: "error", message });
   }
 }
 

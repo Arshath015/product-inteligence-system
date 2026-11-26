@@ -31,48 +31,65 @@ function CatalogCard({
 }) {
   const img = product.primary_image_url ?? (Array.isArray(product.images) ? product.images[0] : null);
   return (
-    <button
-      onClick={() => !alreadyInProject && onToggle(product.id)}
-      className={`group relative flex min-w-0 flex-col overflow-hidden rounded-2xl border text-left transition-all
+    <div
+      className={`group relative flex min-w-0 flex-col overflow-hidden rounded-2xl border transition-all
         ${alreadyInProject
           ? "cursor-default border-border opacity-50"
           : selected
             ? "border-accent shadow-lg shadow-accent/20"
             : "border-border hover:border-accent/40 hover:shadow-lg hover:shadow-black/20"}`}
     >
-      {!alreadyInProject && (
-        <div className={`absolute right-2.5 top-2.5 z-10 h-5 w-5 rounded-full border-2 transition-colors
-          ${selected ? "border-accent bg-accent" : "border-border bg-surface"}`}>
-          {selected && (
-            <svg className="h-full w-full p-0.5 text-accent-foreground" viewBox="0 0 12 12" fill="none">
-              <path d="M2 6l3 3 5-5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
-            </svg>
+      <button
+        type="button"
+        onClick={() => !alreadyInProject && onToggle(product.id)}
+        disabled={alreadyInProject}
+        aria-pressed={selected}
+        aria-label={`${selected ? "Deselect" : "Select"} ${product.name}`}
+        className="relative flex min-w-0 w-full flex-1 flex-col text-left disabled:cursor-default"
+      >
+        {!alreadyInProject && (
+          <div className={`absolute right-2.5 top-2.5 z-10 h-5 w-5 rounded-full border-2 transition-colors
+            ${selected ? "border-accent bg-accent" : "border-border bg-surface"}`}>
+            {selected && (
+              <svg className="h-full w-full p-0.5 text-accent-foreground" viewBox="0 0 12 12" fill="none">
+                <path d="M2 6l3 3 5-5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
+              </svg>
+            )}
+          </div>
+        )}
+        {alreadyInProject && (
+          <div className="absolute right-2.5 top-2.5 z-10 rounded-full bg-surface/90 border border-border px-1.5 py-0.5 text-[9px] uppercase tracking-widest text-muted">
+            In project
+          </div>
+        )}
+        <div className="relative h-48 w-full overflow-hidden bg-background sm:h-52">
+          {img ? (
+            // eslint-disable-next-line @next/next/no-img-element
+            <img src={img} alt={product.name}
+              className="h-full w-full object-contain p-3 transition-transform duration-300 group-hover:scale-[1.03]"
+              onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }}
+            />
+          ) : (
+            <div className="flex h-full items-center justify-center text-2xl text-muted">—</div>
           )}
         </div>
-      )}
-      {alreadyInProject && (
-        <div className="absolute right-2.5 top-2.5 z-10 rounded-full bg-surface/90 border border-border px-1.5 py-0.5 text-[9px] uppercase tracking-widest text-muted">
-          In project
+        <div className="flex flex-1 flex-col gap-0.5 border-t border-border bg-surface p-3">
+          {product.category_name && (
+            <p className="truncate text-[10px] uppercase tracking-wide text-muted">{product.category_name}</p>
+          )}
+          <p className="line-clamp-2 font-serif text-[14px] leading-snug text-foreground">{product.name}</p>
         </div>
-      )}
-      <div className="relative h-48 w-full overflow-hidden bg-background sm:h-52">
-        {img ? (
-          // eslint-disable-next-line @next/next/no-img-element
-          <img src={img} alt={product.name}
-            className="h-full w-full object-contain p-3 transition-transform duration-300 group-hover:scale-[1.03]"
-            onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }}
-          />
-        ) : (
-          <div className="flex h-full items-center justify-center text-2xl text-muted">—</div>
-        )}
-      </div>
-      <div className="flex flex-1 flex-col gap-0.5 border-t border-border bg-surface p-3">
-        {product.category_name && (
-          <p className="truncate text-[10px] uppercase tracking-wide text-muted">{product.category_name}</p>
-        )}
-        <p className="line-clamp-2 font-serif text-[14px] leading-snug text-foreground">{product.name}</p>
-      </div>
-    </button>
+      </button>
+      <a
+        href={product.source_url}
+        target="_blank"
+        rel="noreferrer"
+        className="truncate border-t border-border bg-surface px-3 py-2 text-xs text-accent hover:underline"
+        title={product.source_url}
+      >
+        View product page ↗
+      </a>
+    </div>
   );
 }
 
@@ -99,6 +116,13 @@ export default function BrandImportPage() {
 
   const [adding, setAdding] = useState(false);
   const [addResult, setAddResult] = useState<{ added: number; duplicates: number } | null>(null);
+  const [categoryEdit, setCategoryEdit] = useState("");
+  const [categorySaving, setCategorySaving] = useState(false);
+  const [categoryResult, setCategoryResult] = useState("");
+  const [diagnosticsOpen, setDiagnosticsOpen] = useState(false);
+  const [diagnosticsLoading, setDiagnosticsLoading] = useState(false);
+  const [diagnosticsText, setDiagnosticsText] = useState("");
+  const [diagnosticsError, setDiagnosticsError] = useState("");
   const [resumeFlag, setResumeFlag] = useState(0);
   const readerRef = useRef<ReadableStreamDefaultReader<Uint8Array> | null>(null);
   const runIdRef = useRef<string | null>(null);
@@ -147,7 +171,12 @@ export default function BrandImportPage() {
   const handleEvent = useCallback((event: ExtractProgressEvent) => {
     switch (event.type) {
       case "phase":
-        setProgress((p) => ({ ...p, phase: event.phase as Phase, message: event.message }));
+        setProgress((p) => ({
+          ...p,
+          phase: event.phase as Phase,
+          message: event.message,
+          runId: event.runId ?? p.runId,
+        }));
         break;
       case "discovered":
         setActiveBrandId(event.brandId);
@@ -223,7 +252,7 @@ export default function BrandImportPage() {
             duplicates: event.duplicates, failed: event.failed,
             total: event.total, hasMore: event.hasMore, brandId: event.brandId,
             runId: event.runId, truncated: event.truncated,
-            message: `Discovered ${event.total}; processed ${event.processed}; added ${event.added}; duplicates ${event.duplicates}; failed ${event.failed}.${event.truncated ? " Discovery reached the 5,000-URL safety limit." : ""}`,
+            message: `Discovered ${event.total}; processed ${event.processed}; added ${event.added}; duplicates ${event.duplicates}; failed ${event.failed}.${event.truncated ? " Discovery reached a configured product, collection, or sitemap crawl limit; more products may remain." : ""}`,
           }));
           setBrandBuckets((prev) => {
             const products = prev[event.brandId]?.products ?? [];
@@ -323,6 +352,10 @@ export default function BrandImportPage() {
     setSelected(new Set());
     setAlreadyInProject(new Set());
     setAddResult(null);
+    setCategoryResult("");
+    setDiagnosticsText("");
+    setDiagnosticsError("");
+    setDiagnosticsOpen(false);
     setCategoryFilter("all");
     runIdRef.current = null;
     retryModeRef.current = false;
@@ -381,6 +414,68 @@ export default function BrandImportPage() {
       setSelected(new Set());
     } finally {
       setAdding(false);
+    }
+  };
+
+  const changeSelectedCategory = async () => {
+    const categoryName = categoryEdit.trim();
+    if (selected.size === 0 || !categoryName || categorySaving) return;
+    setCategorySaving(true);
+    setCategoryResult("");
+    try {
+      const res = await fetch("/api/brand-catalogue/category", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ projectId, productIds: [...selected], categoryName }),
+      });
+      const data = await res.json().catch(() => null);
+      if (!res.ok) throw new Error(typeof data?.error === "string" ? data.error : "Could not update product categories.");
+
+      const selectedIds = new Set(selected);
+      setBrandBuckets((prev) => Object.fromEntries(
+        Object.entries(prev).map(([brandId, bucket]) => [
+          brandId,
+          {
+            ...bucket,
+            products: bucket.products.map((product) => selectedIds.has(product.id)
+              ? { ...product, category_name: data.categoryName, category_id: data.categoryId }
+              : product),
+          },
+        ]),
+      ));
+      setSelected(new Set());
+      setCategoryFilter("all");
+      setCategoryResult(`Updated ${data.updated} product${data.updated === 1 ? "" : "s"} to “${data.categoryName}”.`);
+    } catch (error) {
+      setCategoryResult(`Error: ${error instanceof Error ? error.message : String(error)}`);
+    } finally {
+      setCategorySaving(false);
+    }
+  };
+
+  const toggleDiagnostics = async () => {
+    if (diagnosticsOpen) {
+      setDiagnosticsOpen(false);
+      return;
+    }
+    if (!progress.runId) return;
+    setDiagnosticsLoading(true);
+    setDiagnosticsError("");
+    try {
+      const res = await fetch(`/api/brand-catalogue/diagnostics?runId=${encodeURIComponent(progress.runId)}`, {
+        cache: "no-store",
+      });
+      const data = await res.json().catch(() => null);
+      if (!res.ok) throw new Error(typeof data?.error === "string" ? data.error : "Could not load local diagnostics.");
+      const records = Array.isArray(data?.records) ? data.records : [];
+      setDiagnosticsText(
+        `${JSON.stringify(records, null, 2)}${data?.truncated ? "\n\nOlder log entries were omitted; showing the most recent records." : ""}`,
+      );
+      setDiagnosticsOpen(true);
+    } catch (error) {
+      setDiagnosticsError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setDiagnosticsLoading(false);
     }
   };
 
@@ -493,8 +588,26 @@ export default function BrandImportPage() {
           )}
           {progress.truncated && (
             <p className="mt-2 text-xs text-muted">
-              Discovery reached the 5,000-URL safety limit; more products may remain. Import a specific public category page to continue discovery.
+              Discovery reached a configured product, collection, or sitemap crawl limit; more products may remain. Import a specific public category page to continue discovery.
             </p>
+          )}
+          {process.env.NODE_ENV !== "production" && progress.runId && (
+            <div className="mt-3">
+              <button
+                type="button"
+                onClick={toggleDiagnostics}
+                disabled={diagnosticsLoading}
+                className="text-xs text-accent underline-offset-2 hover:underline disabled:opacity-50"
+              >
+                {diagnosticsLoading ? "Loading local diagnostics…" : diagnosticsOpen ? "Hide local diagnostics" : "View local diagnostics"}
+              </button>
+              {diagnosticsError && <p role="alert" className="mt-2 text-xs text-red-400">{diagnosticsError}</p>}
+              {diagnosticsOpen && (
+                <pre className="mt-2 max-h-96 overflow-auto rounded-xl border border-border bg-background p-3 text-[10px] leading-relaxed text-muted">
+                  {diagnosticsText || "No diagnostic events were recorded for this run."}
+                </pre>
+              )}
+            </div>
           )}
         </div>
       )}
@@ -584,6 +697,38 @@ export default function BrandImportPage() {
               {adding ? "Adding…" : `Add ${selected.size > 0 ? selected.size : ""} to project`}
             </button>
           </div>
+          {selected.size > 0 && (
+            <div className="flex flex-wrap items-center gap-2 rounded-xl border border-border bg-surface p-3">
+              <label htmlFor="brand-import-category" className="text-xs text-muted">Change category for selection</label>
+              <input
+                id="brand-import-category"
+                list={`brand-import-categories-${activeBrandId ?? "active"}`}
+                value={categoryEdit}
+                onChange={(event) => setCategoryEdit(event.target.value)}
+                placeholder="e.g. armchair, Sommier"
+                className="min-w-40 flex-1 rounded-full border border-border bg-background px-3 py-2 text-sm text-foreground placeholder:text-muted focus:border-accent/60 focus:outline-none"
+              />
+              <datalist id={`brand-import-categories-${activeBrandId ?? "active"}`}>
+                {categories.map((category) => <option key={category} value={category} />)}
+              </datalist>
+              <button
+                type="button"
+                onClick={changeSelectedCategory}
+                disabled={!categoryEdit.trim() || categorySaving}
+                className="rounded-full border border-border px-4 py-2 text-sm text-foreground transition-colors hover:border-accent/50 disabled:opacity-50"
+              >
+                {categorySaving ? "Updating…" : "Change category"}
+              </button>
+            </div>
+          )}
+          {categoryResult && (
+            <p
+              role={categoryResult.startsWith("Error:") ? "alert" : "status"}
+              className={`text-xs ${categoryResult.startsWith("Error:") ? "text-red-400" : "text-muted"}`}
+            >
+              {categoryResult}
+            </p>
+          )}
 
           {/* Grid */}
           <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5">
