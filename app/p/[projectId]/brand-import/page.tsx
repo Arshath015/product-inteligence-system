@@ -111,6 +111,7 @@ export default function BrandImportPage() {
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [alreadyInProject, setAlreadyInProject] = useState<Set<string>>(new Set());
   const [categoryFilter, setCategoryFilter] = useState("all");
+  const [productSearch, setProductSearch] = useState("");
 
   const [progress, setProgress] = useState<ProgressState>({
     phase: "idle", message: "", processed: 0, added: 0, duplicates: 0, failed: 0, total: 0,
@@ -661,7 +662,13 @@ export default function BrandImportPage() {
 
   // Category pills
   const categories = Array.from(new Set(allProducts.map((p) => p.category_name).filter(Boolean) as string[])).sort();
-  const visibleProducts = categoryFilter === "all" ? allProducts : allProducts.filter((p) => p.category_name === categoryFilter);
+  const categoryProducts = categoryFilter === "all"
+    ? allProducts
+    : allProducts.filter((product) => product.category_name === categoryFilter);
+  const normalizedProductSearch = productSearch.trim().toLocaleLowerCase();
+  const visibleProducts = categoryProducts.filter((product) =>
+    !normalizedProductSearch || product.name.toLocaleLowerCase().includes(normalizedProductSearch),
+  );
   const selectableCount = visibleProducts.filter((p) => !alreadyInProject.has(p.id)).length;
   const selectedCategoryCorrections = reconciliationPreview?.categoryCorrections
     .filter((correction) => selectedCorrectionIds.has(correction.id)) ?? [];
@@ -877,6 +884,25 @@ export default function BrandImportPage() {
               </button>
             )}
           </div>
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <label className="flex min-w-0 max-w-xl flex-1 items-center gap-2 rounded-full border border-border bg-surface px-4 py-2.5 focus-within:border-accent/60">
+              <svg className="h-4 w-4 flex-shrink-0 text-muted" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                <circle cx="10.8" cy="10.8" r="6.8" stroke="currentColor" strokeWidth="1.7" />
+                <path d="m16 16 4.2 4.2" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" />
+              </svg>
+              <input
+                type="search"
+                value={productSearch}
+                onChange={(event) => setProductSearch(event.target.value)}
+                placeholder="Search products by name"
+                aria-label="Search fetched products by name"
+                className="min-w-0 flex-1 bg-transparent text-sm text-foreground outline-none placeholder:text-muted"
+              />
+            </label>
+            <p className="text-xs text-muted" aria-live="polite">
+              {visibleProducts.length} of {categoryProducts.length} products
+            </p>
+          </div>
           {reconciliationError && !reconciliationOpen && (
             <p role="alert" className="text-xs text-red-400">{reconciliationError}</p>
           )}
@@ -934,6 +960,11 @@ export default function BrandImportPage() {
 
           {/* Grid */}
           <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5">
+            {visibleProducts.length === 0 && (
+              <p className="col-span-full rounded-xl border border-border bg-surface p-5 text-sm text-muted">
+                No products match that name. Try a different search.
+              </p>
+            )}
             {visibleProducts.map((p) => (
               <MemoCatalogCard
                 key={p.id}
