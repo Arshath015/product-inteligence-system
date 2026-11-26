@@ -11,6 +11,9 @@ export interface BrandImportDiagnostic {
   stage: string;
   outcome?: string;
   brandName?: string;
+  productName?: string;
+  categoryName?: string | null;
+  categoryRouteHint?: string | null;
   url?: string;
   canonicalUrl?: string;
   reason?: string;

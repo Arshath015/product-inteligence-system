@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { categoryFromProductUrl, refineCategoryHint } from "../lib/productCategory.ts";
+import { categoryFromProductUrl, guessCategorySlug, refineCategoryHint } from "../lib/productCategory.ts";
 
 test("uses localized product route category when the product has no category hint", () => {
   assert.equal(
@@ -33,4 +33,27 @@ test("recognizes localized sofa routes and leaves mixed catalogue routes unclass
   assert.equal(categoryFromProductUrl("https://example.com/en/products/outdoor-sofas/pacific/"), "outdoor");
   assert.equal(categoryFromProductUrl("https://example.com/en/products/outdoor-armchairs-and-sunbed/nathy/"), "outdoor");
   assert.equal(categoryFromProductUrl("https://example.com/en/products/tables-and-chairs/lucy/"), null);
+});
+
+test("classifies the product being described, not a comparative chair type", () => {
+  const description =
+    "Like the armchair, the chair combines comfort and aesthetics, ergonomics and versatility.";
+  const tablesAndChairsUrl = "https://www.ditreitalia.com/en/products/tables-and-chairs/st-tropez/";
+
+  assert.equal(guessCategorySlug(description), "dining-chairs");
+  assert.equal(refineCategoryHint("armchairs", "St. Tropez", [description, tablesAndChairsUrl]), "dining-chairs");
+  assert.equal(
+    refineCategoryHint("armchairs", "Billie", [
+      "Designing an armchair with an enveloping backrest.",
+      "https://www.ditreitalia.com/en/products/tables-and-chairs/billie/",
+    ]),
+    "other",
+  );
+  assert.equal(
+    refineCategoryHint("armchairs", "Viga", [
+      "The chair combines a cantilever form with an enveloping tub armchair.",
+      "https://www.ditreitalia.com/en/products/tables-and-chairs/viga/",
+    ]),
+    "other",
+  );
 });

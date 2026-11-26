@@ -13,6 +13,7 @@ import { nanoid } from "nanoid";
 import { randomUUID } from "node:crypto";
 import { canonicalSourceUrl } from "@/lib/bulk/canonicalSourceUrl";
 import { recordBrandImportDiagnostic } from "@/lib/bulk/brandImportDiagnostics";
+import { categoryFromProductUrl } from "@/lib/productCategory";
 import type { ExtractedProductData } from "@/lib/types";
 
 export interface CatalogueProduct {
@@ -410,6 +411,9 @@ export async function extractBrandCatalogue(
             void recordBrandImportDiagnostic(runId, {
               stage: "product_save",
               outcome: "added",
+              productName: extracted.name,
+              categoryName: extracted.categoryHint,
+              categoryRouteHint: categoryFromProductUrl(url),
               url,
               canonicalUrl: sourceUrl !== url ? sourceUrl : undefined,
               counts: { images: images.length },
