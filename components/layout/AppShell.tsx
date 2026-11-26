@@ -12,10 +12,13 @@ import { CatalogCacheProvider } from "@/components/project/CatalogCacheContext";
 
 const MIN_WIDTH = 320;
 const MAX_WIDTH = 640;
-const DEFAULT_WIDTH = 400;
+const DEFAULT_WIDTH = 360;
 const COLLAPSED_WIDTH = 60;
 const STORAGE_KEY = "altossa-chat-width";
 const COLLAPSED_KEY = "altossa-chat-collapsed";
+
+const getViewportMaxWidth = () =>
+  Math.min(MAX_WIDTH, Math.max(MIN_WIDTH, Math.floor(window.innerWidth * 0.4)));
 
 function Shell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
@@ -31,7 +34,11 @@ function Shell({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     /* eslint-disable react-hooks/set-state-in-effect -- one-time hydration from a browser-only API (localStorage), not available during SSR */
     const storedWidth = Number(localStorage.getItem(STORAGE_KEY));
-    if (storedWidth >= MIN_WIDTH && storedWidth <= MAX_WIDTH) setChatWidth(storedWidth);
+    if (storedWidth >= MIN_WIDTH && storedWidth <= MAX_WIDTH) {
+      setChatWidth(Math.min(storedWidth, getViewportMaxWidth()));
+    } else {
+      setChatWidth(Math.min(DEFAULT_WIDTH, getViewportMaxWidth()));
+    }
     setCollapsed(localStorage.getItem(COLLAPSED_KEY) === "1");
     setHydrated(true);
     /* eslint-enable react-hooks/set-state-in-effect */
@@ -57,7 +64,7 @@ function Shell({ children }: { children: React.ReactNode }) {
 
       const onMove = (ev: MouseEvent) => {
         if (!dragging.current) return;
-        const next = Math.min(MAX_WIDTH, Math.max(MIN_WIDTH, ev.clientX));
+        const next = Math.min(getViewportMaxWidth(), Math.max(MIN_WIDTH, ev.clientX));
         setChatWidth(next);
       };
       const onUp = () => {
@@ -163,7 +170,11 @@ function Shell({ children }: { children: React.ReactNode }) {
 
       <div className="flex min-h-0 flex-1">
         <aside
-          style={{ width: collapsedOnDesktop ? COLLAPSED_WIDTH : chatWidth, willChange: "width" }}
+          style={{
+            width: collapsedOnDesktop ? COLLAPSED_WIDTH : chatWidth,
+            maxWidth: mobileView === "chat" ? undefined : "min(640px, max(320px, 40vw))",
+            willChange: "width",
+          }}
           className={`min-w-0 flex-shrink-0 overflow-hidden border-r border-border bg-chat-panel transition-[width] duration-150 ease-out ${
             mobileView === "chat" ? "!w-full flex" : "hidden sm:flex"
           }`}
