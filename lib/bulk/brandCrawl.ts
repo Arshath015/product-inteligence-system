@@ -83,6 +83,7 @@ export async function crawlBrandCatalogue(
   const maxCollections = opts?.maxCollections ?? 15;
   const host = hostOf(baseUrl);
   let preferredLocale = getLocalePrefix(baseUrl);
+  let enforceLocale = preferredLocale !== null;
 
   const seen = new Set<string>();
   const productUrls: string[] = [];
@@ -96,6 +97,12 @@ export async function crawlBrandCatalogue(
   let tavilyFallback = false;
   let truncated = false;
 
+  function matchesPreferredLocale(url: string): boolean {
+    if (!enforceLocale) return true;
+    const locale = getLocalePrefix(url);
+    return locale === preferredLocale || (preferredLocale !== null && locale === null);
+  }
+
   function addUrl(url: string): boolean {
     let normalized = url;
     try {
@@ -108,8 +115,7 @@ export async function crawlBrandCatalogue(
     } catch {
       return false;
     }
-    const locale = getLocalePrefix(normalized);
-    if (preferredLocale && locale && locale !== preferredLocale) return false;
+    if (!matchesPreferredLocale(normalized)) return false;
     if (seen.has(normalized)) return false;
     if (productUrls.length >= maxProducts) {
       truncated = true;
@@ -122,20 +128,47 @@ export async function crawlBrandCatalogue(
 
   // ── 1. Sitemap ─────────────────────────────────────────────────────────────
   onProgress?.(`Checking ${host} sitemap…`);
-  const sitemapResult = await discoverFromSitemap(baseUrl, maxProducts, maxCollections).catch(() => ({
+  const sitemapResult = await discoverFromSitemap(
+    baseUrl,
+    maxProducts,
+    maxCollections,
+    homepageSignals?.finalUrl ?? baseUrl,
+  ).catch(() => ({
     productUrls: [] as string[],
     collectionUrls: [] as string[],
     truncated: false,
   }));
 
-  const sitemapLocale = getLocalePrefix(sitemapResult.productUrls[0] ?? "");
-  if (
-    sitemapLocale &&
-    (!preferredLocale || !sitemapResult.productUrls.some((url) => getLocalePrefix(url) === preferredLocale))
-  ) {
-    preferredLocale = sitemapLocale;
-  } else if (!preferredLocale) {
-    preferredLocale = getLocalePrefix(homepageSignals?.finalUrl ?? "");
+  if (!enforceLocale) {
+    const homepageLocale = getLocalePrefix(homepageSignals?.finalUrl ?? "");
+    if (homepageLocale) {
+      preferredLocale = homepageLocale;
+      enforceLocale = true;
+    }
+  }
+  if (!enforceLocale && sitemapResult.productUrls.length > 0) {
+    preferredLocale = getLocalePrefix(sitemapResult.productUrls[0]);
+    enforceLocale = true;
+  }
+  if (!enforceLocale) {
+    const catalogueLinks = [
+      ...(homepageSignals ? discoverCollectionLinks(homepageSignals, maxCollections) : []),
+      ...sitemapResult.collectionUrls,
+    ];
+    if (catalogueLinks.some((url) => getLocalePrefix(url) === null)) {
+      enforceLocale = true;
+    } else {
+      const localeCounts = new Map<string, number>();
+      for (const url of catalogueLinks) {
+        const locale = getLocalePrefix(url);
+        if (locale) localeCounts.set(locale, (localeCounts.get(locale) ?? 0) + 1);
+      }
+      const dominantLocale = [...localeCounts.entries()].sort((a, b) => b[1] - a[1])[0]?.[0];
+      if (dominantLocale) {
+        preferredLocale = dominantLocale;
+        enforceLocale = true;
+      }
+    }
   }
   for (const u of sitemapResult.productUrls) addUrl(u);
   truncated = truncated || sitemapResult.truncated;
@@ -157,15 +190,13 @@ export async function crawlBrandCatalogue(
     if (homepageSignals) {
       for (const u of discoverProductLinks(homepageSignals, 20)) addUrl(u);
       for (const u of discoverCollectionLinks(homepageSignals, maxCollections)) {
-        const locale = getLocalePrefix(u);
-        if (!preferredLocale || !locale || locale === preferredLocale) collectionCandidates.add(u);
+        if (matchesPreferredLocale(u)) collectionCandidates.add(u);
       }
     }
 
     if (sitemapResult.collectionUrls.length > maxCollections) truncated = true;
     for (const u of sitemapResult.collectionUrls.slice(0, maxCollections)) {
-      const locale = getLocalePrefix(u);
-      if (!preferredLocale || !locale || locale === preferredLocale) collectionCandidates.add(u);
+      if (matchesPreferredLocale(u)) collectionCandidates.add(u);
     }
 
     const queue = [...collectionCandidates].slice(0, maxCollections);
@@ -193,22 +224,18 @@ export async function crawlBrandCatalogue(
         }
 
         for (const nextPage of discoverPaginationLinks(signals, 5)) {
-          const locale = getLocalePrefix(nextPage);
-          if ((!preferredLocale || !locale || locale === preferredLocale) && !queued.has(nextPage) && !visited.has(nextPage)) {
+          if (matchesPreferredLocale(nextPage) && !queued.has(nextPage) && !visited.has(nextPage)) {
             queued.add(nextPage);
             queue.unshift(nextPage);
           }
         }
 
-        // Follow subcategories only from empty listings. This keeps the crawl
-        // bounded and avoids recursively walking the entire site navigation.
-        if (pageProducts.length === 0) {
-          for (const sub of discoverCollectionLinks(signals, 5)) {
-            const locale = getLocalePrefix(sub);
-            if ((!preferredLocale || !locale || locale === preferredLocale) && !queued.has(sub) && !visited.has(sub)) {
-              queued.add(sub);
-              queue.push(sub);
-            }
+        // Listings can contain both products and links to nested categories.
+        // Follow those category links too, but keep the crawl bounded.
+        for (const sub of discoverCollectionLinks(signals, 5)) {
+          if (matchesPreferredLocale(sub) && !queued.has(sub) && !visited.has(sub)) {
+            queued.add(sub);
+            queue.push(sub);
           }
         }
 

@@ -4,17 +4,22 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useProject } from "@/components/project/ProjectContext";
 import type { CatalogueProduct, ExtractProgressEvent } from "@/lib/bulk/brandCatalogueService";
 
-type Phase = "idle" | "discovering" | "pre_screening" | "extracting" | "done" | "error";
+type Phase = "idle" | "discovering" | "extracting" | "done" | "error";
 
 interface ProgressState {
   phase: Phase;
   message: string;
-  extracted: number;
+  processed: number;
+  added: number;
+  duplicates: number;
   failed: number;
   total: number;
+  hasMore: boolean;
   truncated: boolean;
   brandId: string | null;
   brandName: string | null;
+  runId: string | null;
+  failureDetails: Record<string, string>;
 }
 
 // ─── Catalogue product card ───────────────────────────────────────────────────
@@ -88,13 +93,16 @@ export default function BrandImportPage() {
   const [categoryFilter, setCategoryFilter] = useState("all");
 
   const [progress, setProgress] = useState<ProgressState>({
-    phase: "idle", message: "", extracted: 0, failed: 0, total: 0, truncated: false, brandId: null, brandName: null,
+    phase: "idle", message: "", processed: 0, added: 0, duplicates: 0, failed: 0, total: 0,
+    hasMore: false, truncated: false, brandId: null, brandName: null, runId: null, failureDetails: {},
   });
 
   const [adding, setAdding] = useState(false);
   const [addResult, setAddResult] = useState<{ added: number; duplicates: number } | null>(null);
   const [resumeFlag, setResumeFlag] = useState(0);
   const readerRef = useRef<ReadableStreamDefaultReader<Uint8Array> | null>(null);
+  const runIdRef = useRef<string | null>(null);
+  const retryModeRef = useRef(false);
   // Set to true when a "done+hasMore" event has already scheduled the next
   // batch — prevents the stream-closure fallback from firing a duplicate resume.
   const hasMorePendingRef = useRef(false);
@@ -110,22 +118,24 @@ export default function BrandImportPage() {
     fetch(`/api/brand-catalogue?projectId=${projectId}`)
       .then((r) => r.json())
       .then((data) => {
-        if (!Array.isArray(data.brands) || data.brands.length === 0) return;
-        setBrandBuckets((prev) => {
-          const next = { ...prev };
-          for (const b of data.brands) {
-            if (!next[b.id]) {
-              next[b.id] = { name: b.name, products: b.products };
+        if (Array.isArray(data.brands) && data.brands.length > 0) {
+          setBrandBuckets((prev) => {
+            const next = { ...prev };
+            for (const b of data.brands) {
+              if (!next[b.id]) {
+                next[b.id] = { name: b.name, products: b.products };
+              }
             }
-          }
-          return next;
-        });
-        setActiveBrandId((prev) => prev ?? data.brands[0]?.id ?? null);
+            return next;
+          });
+          setActiveBrandId((prev) => prev ?? data.brands[0]?.id ?? null);
+        }
 
         // Auto-resume if extraction was interrupted (flag stored in sessionStorage)
         const wasRunning = (() => { try { return sessionStorage.getItem("brand-import-running") === projectId; } catch { return false; } })();
+        const savedRunId = (() => { try { return sessionStorage.getItem("brand-import-run-id"); } catch { return null; } })();
         if (wasRunning && savedUrl) {
-          try { sessionStorage.removeItem("brand-import-running"); } catch {}
+          runIdRef.current = savedRunId;
           setProgress((p) => ({ ...p, phase: "extracting", message: "Resuming interrupted extraction…" }));
           setResumeFlag(1);
         }
@@ -141,17 +151,23 @@ export default function BrandImportPage() {
         break;
       case "discovered":
         setActiveBrandId(event.brandId);
+        runIdRef.current = event.runId;
+        try { sessionStorage.setItem("brand-import-run-id", event.runId); } catch {}
         setBrandBuckets((prev) => ({
           ...prev,
           [event.brandId]: { name: event.brandName, products: prev[event.brandId]?.products ?? [] },
         }));
         setProgress((p) => ({
           ...p, phase: "extracting",
-          // On resume keep existing extracted count; on first call reset
-          extracted: event.alreadyExtracted > 0 ? event.alreadyExtracted : p.extracted,
+          processed: event.processed,
+          added: event.added,
+          duplicates: event.duplicates,
+          failed: event.failed,
           total: event.total,
+          hasMore: event.hasMore,
           brandId: event.brandId, brandName: event.brandName,
-          message: `Found ${event.total} products on ${event.brandName}`,
+          runId: event.runId,
+          message: `Discovered ${event.total} product pages on ${event.brandName}`,
         }));
         break;
       case "product":
@@ -162,14 +178,31 @@ export default function BrandImportPage() {
           return { ...prev, [bid]: { name: prev[bid]?.name ?? "", products: [...existing, event.product] } };
         });
         setProgress((p) => ({
-          ...p, extracted: event.extracted, failed: event.failed, total: event.total,
+          ...p,
+          processed: event.processed,
+          added: event.added,
+          duplicates: event.duplicates,
+          failed: event.failed,
+          total: event.total,
+          failureDetails: Object.fromEntries(
+            Object.entries(p.failureDetails).filter(([url]) => url !== event.product.source_url),
+          ),
         }));
         break;
       case "skip":
-        setProgress((p) => ({ ...p, extracted: event.extracted, failed: event.failed, total: event.total }));
+        setProgress((p) => ({
+          ...p,
+          processed: event.processed,
+          added: event.added,
+          duplicates: event.duplicates,
+          failed: event.failed,
+          total: event.total,
+          failureDetails: { ...p.failureDetails, [event.url]: event.reason },
+        }));
         break;
       case "done":
-        if (event.hasMore) {
+        retryModeRef.current = event.retrying;
+        if (event.hasMore && !event.retrying) {
           // More batches remain — resume without resetting UI.
           // Set the flag so stream-closure fallback doesn't fire a duplicate.
           hasMorePendingRef.current = true;
@@ -178,16 +211,19 @@ export default function BrandImportPage() {
             setResumeFlag((n) => n + 1);
           }, 400);
           setProgress((p) => ({
-            ...p, phase: "extracting", extracted: event.extracted,
-            failed: event.failed, total: event.total, truncated: event.truncated,
-            message: `Extracted ${event.extracted} so far, continuing…`,
+            ...p, phase: "extracting", processed: event.processed,
+            added: event.added, duplicates: event.duplicates, failed: event.failed,
+            total: event.total, hasMore: event.hasMore, truncated: event.truncated,
+            message: `Processed ${event.processed} of ${event.total}; continuing…`,
           }));
         } else {
           try { sessionStorage.removeItem("brand-import-running"); } catch {}
           setProgress((p) => ({
-            ...p, phase: "done", extracted: event.extracted, failed: event.failed,
-            total: event.total, brandId: event.brandId, truncated: event.truncated,
-            message: `${event.extracted} product page(s) processed${event.truncated ? " (catalogue discovery reached the 5,000-URL safety limit)" : ""}`,
+            ...p, phase: "done", processed: event.processed, added: event.added,
+            duplicates: event.duplicates, failed: event.failed,
+            total: event.total, hasMore: event.hasMore, brandId: event.brandId,
+            runId: event.runId, truncated: event.truncated,
+            message: `Discovered ${event.total}; processed ${event.processed}; added ${event.added}; duplicates ${event.duplicates}; failed ${event.failed}.${event.truncated ? " Discovery reached the 5,000-URL safety limit." : ""}`,
           }));
           setBrandBuckets((prev) => {
             const products = prev[event.brandId]?.products ?? [];
@@ -203,14 +239,23 @@ export default function BrandImportPage() {
     }
   }, [alreadyInProject]);
 
-  const runStream = useCallback(async (brandUrl: string, pid: string, isResume = false) => {
+  const runStream = useCallback(async (
+    brandUrl: string,
+    pid: string,
+    options: { runId?: string; retryFailed?: boolean } = {},
+  ) => {
     const res = await fetch("/api/brand-catalogue", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ brandUrl, projectId: pid, isResume }),
+      body: JSON.stringify({ brandUrl, projectId: pid, ...options }),
     });
     if (!res.ok || !res.body) {
-      setProgress((p) => ({ ...p, phase: "error", message: "Failed to connect. Please try again." }));
+      const body = await res.json().catch(() => null);
+      setProgress((p) => ({
+        ...p,
+        phase: "error",
+        message: typeof body?.error === "string" ? body.error : "Failed to connect. Please try again.",
+      }));
       return;
     }
     const reader = res.body.getReader();
@@ -234,7 +279,7 @@ export default function BrandImportPage() {
     setProgress((p) => {
       if (
         !hasMorePendingRef.current &&
-        (p.phase === "discovering" || p.phase === "pre_screening" || p.phase === "extracting")
+        (p.phase === "discovering" || p.phase === "extracting")
       ) {
         setTimeout(() => setResumeFlag((n) => n + 1), 300);
         return { ...p, phase: "idle", message: "" };
@@ -249,8 +294,9 @@ export default function BrandImportPage() {
     try { sessionStorage.setItem("brand-import-running", projectId); } catch {}
     const timer = setTimeout(() => {
       setProgress((p) => ({ ...p, phase: "extracting", message: "Resuming…" }));
-      runStream(url.trim(), projectId, true).finally(() => {
-        try { sessionStorage.removeItem("brand-import-running"); } catch {}
+      runStream(url.trim(), projectId, {
+        runId: runIdRef.current ?? undefined,
+        retryFailed: retryModeRef.current,
       });
     }, 0);
     return () => clearTimeout(timer);
@@ -258,7 +304,7 @@ export default function BrandImportPage() {
 
   // Warn before reload/navigate-away while extraction is running
   useEffect(() => {
-    const isRunningNow = ["discovering", "pre_screening", "extracting"].includes(progress.phase);
+    const isRunningNow = ["discovering", "extracting"].includes(progress.phase);
     if (!isRunningNow) return;
     const handler = (e: BeforeUnloadEvent) => {
       e.preventDefault();
@@ -278,12 +324,32 @@ export default function BrandImportPage() {
     setAlreadyInProject(new Set());
     setAddResult(null);
     setCategoryFilter("all");
-    setProgress({ phase: "discovering", message: "Connecting…", extracted: 0, failed: 0, total: 0, truncated: false, brandId: null, brandName: null });
+    runIdRef.current = null;
+    retryModeRef.current = false;
+    try { sessionStorage.removeItem("brand-import-run-id"); } catch {}
+    setProgress({
+      phase: "discovering", message: "Connecting…", processed: 0, added: 0, duplicates: 0, failed: 0,
+      total: 0, hasMore: false, truncated: false, brandId: null, brandName: null,
+      runId: null, failureDetails: {},
+    });
 
     // Mark extraction as running so we can auto-resume if the user navigates away
     try { sessionStorage.setItem("brand-import-running", projectId); } catch {}
     await runStream(trimmed, projectId);
-    try { sessionStorage.removeItem("brand-import-running"); } catch {}
+  }, [url, projectId, runStream]);
+
+  const resumeImport = useCallback(async (retryFailed = false) => {
+    const runId = runIdRef.current;
+    if (!runId || !url.trim()) return;
+    retryModeRef.current = retryFailed;
+    try { sessionStorage.setItem("brand-import-running", projectId); } catch {}
+    setProgress((p) => ({
+      ...p,
+      phase: "extracting",
+      hasMore: true,
+      message: retryFailed ? "Retrying failed product pages…" : "Continuing the saved import…",
+    }));
+    await runStream(url.trim(), projectId, { runId, retryFailed });
   }, [url, projectId, runStream]);
 
   const toggleSelect = useCallback((id: string) => {
@@ -318,9 +384,9 @@ export default function BrandImportPage() {
     }
   };
 
-  const isRunning = progress.phase === "discovering" || progress.phase === "pre_screening" || progress.phase === "extracting";
+  const isRunning = progress.phase === "discovering" || progress.phase === "extracting";
   const isDone = progress.phase === "done";
-  const pct = progress.total > 0 ? Math.round((progress.extracted / progress.total) * 100) : 0;
+  const pct = progress.total > 0 ? Math.round((progress.processed / progress.total) * 100) : 0;
 
   // Active brand's products
   const activeBrand = activeBrandId ? brandBuckets[activeBrandId] : null;
@@ -343,7 +409,7 @@ export default function BrandImportPage() {
       <div>
         <h1 className="font-serif text-2xl text-foreground">Brand Import</h1>
         <p className="mt-1 text-sm text-muted">
-          Paste a brand URL to extract its entire product catalogue. Then choose which products to add to this project.
+          Paste a brand URL to discover its public catalogue and extract the products found. Results, failures, and continuation status are shown below.
         </p>
       </div>
 
@@ -379,6 +445,14 @@ export default function BrandImportPage() {
           </button>
         )}
       </div>
+      {!isRunning && progress.runId && progress.hasMore && (
+        <button
+          onClick={() => resumeImport(false)}
+          className="rounded-full border border-border px-4 py-2 text-sm text-foreground transition-colors hover:border-accent/50"
+        >
+          Continue import
+        </button>
+      )}
 
       {/* Progress bar */}
       {(isRunning || isDone || progress.phase === "error") && (
@@ -387,7 +461,7 @@ export default function BrandImportPage() {
             <p className="text-sm text-foreground">{progress.message}</p>
             {progress.total > 0 && (
               <p className="font-serif text-sm text-foreground">
-                {progress.extracted} <span className="text-muted">/ {progress.total}</span>
+                {progress.processed} <span className="text-muted">/ {progress.total}</span>
               </p>
             )}
           </div>
@@ -395,11 +469,31 @@ export default function BrandImportPage() {
             <div className="h-full rounded-full bg-accent transition-all duration-500" style={{ width: `${pct}%` }} />
           </div>
           {progress.failed > 0 && (
-            <p className="mt-2 text-xs text-muted">{progress.failed} pages unavailable (skipped)</p>
+            <div className="mt-2 flex flex-wrap items-center gap-3">
+              <p className="text-xs text-muted">{progress.failed} failed; failures are saved for retry.</p>
+              {!isRunning && progress.runId && (
+                <button
+                  onClick={() => resumeImport(true)}
+                  className="text-xs font-medium text-accent hover:underline"
+                >
+                  Retry failed pages
+                </button>
+              )}
+            </div>
+          )}
+          {Object.entries(progress.failureDetails).length > 0 && (
+            <ul className="mt-3 space-y-1 text-xs text-muted">
+              {Object.entries(progress.failureDetails).slice(0, 5).map(([failedUrl, reason]) => (
+                <li key={failedUrl} className="break-all">
+                  <a href={failedUrl} target="_blank" rel="noreferrer" className="underline">{failedUrl}</a>
+                  {" — "}{reason}
+                </li>
+              ))}
+            </ul>
           )}
           {progress.truncated && (
             <p className="mt-2 text-xs text-muted">
-              This scan reached its safety limit; more products may remain. Use the global Library&apos;s Discover more action or import a specific category page.
+              Discovery reached the 5,000-URL safety limit; more products may remain. Import a specific public category page to continue discovery.
             </p>
           )}
         </div>

@@ -4,28 +4,8 @@ import { withGroqRetry } from "@/lib/groq/client";
 import { tavilyExtract } from "@/lib/tavily";
 import { tokensFrom } from "@/lib/textTokens";
 import { absolutize, fetchPageSignals, hasUsableSignal, extractOrgNames, looksLikeSiteOwner, type PageSignals } from "@/lib/pageSignals";
+import { CATEGORY_SLUGS, guessCategorySlug, refineCategoryHint, type CategorySlug } from "@/lib/productCategory";
 import type { ExtractedProductData } from "@/lib/types";
-
-const CATEGORY_SLUGS = [
-  "sofas",
-  "armchairs",
-  "lounge-chairs",
-  "dining-chairs",
-  "desks",
-  "tables",
-  "dining-tables",
-  "consoles",
-  "coffee-tables",
-  "side-tables",
-  "beds",
-  "lighting",
-  "accessories",
-  "rugs",
-  "storage",
-  "outdoor",
-  "other",
-] as const;
-export type CategorySlug = (typeof CATEGORY_SLUGS)[number];
 
 const extractionSchema = z.object({
   name: z.string().describe("The product's name/model, without the brand name prefixed"),
@@ -207,63 +187,6 @@ function imagesFromJsonLd(jsonLd: unknown[], baseUrl: string): string[] {
   return urls;
 }
 
-// Ordered most-specific-first — a combined-text scan returns the FIRST
-// matching slug, so a general bucket's keywords (e.g. "table") must never
-// precede a more specific one that's also a kind of table (e.g. "console
-// table", "dining table") or it would always win first.
-const CATEGORY_KEYWORDS: [CategorySlug, string[]][] = [
-  ["sofas", ["sofa", "settee", "couch", "sectional"]],
-  ["armchairs", ["armchair", "accent chair", "easy chair"]],
-  ["lounge-chairs", ["lounge chair", "recliner", "chaise"]],
-  ["dining-chairs", ["dining chair", "chair"]],
-  ["desks", ["desk", "writing desk", "secretary desk", "workstation"]],
-  ["consoles", ["console", "entryway table", "hallway table", "entry table"]],
-  ["dining-tables", ["dining table", "dinner table"]],
-  ["coffee-tables", ["coffee table", "cocktail table", "low table"]],
-  ["side-tables", ["side table", "end table", "nightstand", "accent table"]],
-  ["tables", ["table"]],
-  ["beds", ["bed", "headboard"]],
-  ["lighting", ["lamp", "light", "lighting", "chandelier", "sconce", "pendant"]],
-  ["rugs", ["rug", "carpet"]],
-  ["storage", ["cabinet", "shelf", "shelving", "storage", "sideboard", "credenza", "bookcase"]],
-  ["outdoor", ["outdoor", "patio", "garden"]],
-  ["accessories", ["vase", "accessory", "decor", "mirror", "tray"]],
-];
-
-/** Cheap keyword match against a free-text product-type string — no LLM needed. */
-export function guessCategorySlug(text: string | null | undefined): CategorySlug {
-  if (!text) return "other";
-  const lower = text.toLowerCase();
-  for (const [slug, keywords] of CATEGORY_KEYWORDS) {
-    if (keywords.some((k) => lower.includes(k))) return slug;
-  }
-  return "other";
-}
-
-/**
- * Never settles for "other" as long as SOME available text signal confidently
- * names a real category — the model (or the JSON-LD keyword scan) saying
- * "other" means "I don't see it", not "there is no category". A confident
- * primary hint is always trusted as-is (never second-guessed); only when it
- * comes back "other" do we escalate, trying:
- *  1. The product's own name alone — short, specific, and frequently the
- *     clearest signal of all (e.g. "Wave Desk", "Wave Console").
- *  2. A full-text scan across every signal available (description, meta
- *     description, page title, full page text) — catches cases where the
- *     category is only ever mentioned in body copy (e.g. "sofa" appearing
- *     in the page text but never in the title or a short description).
- */
-export function refineCategoryHint(
-  primaryHint: CategorySlug,
-  name: string,
-  parts: (string | null | undefined)[]
-): CategorySlug {
-  if (primaryHint !== "other") return primaryHint;
-  const fromName = guessCategorySlug(name);
-  if (fromName !== "other") return fromName;
-  return guessCategorySlug(parts.filter(Boolean).join(" "));
-}
-
 interface JsonLdProduct {
   name: string;
   brandName: string | null;
@@ -378,7 +301,7 @@ function productFromOgOrTitle(
   const categoryHint = refineCategoryHint(
     guessCategorySlug(name),
     name,
-    [description, signals.textSnippet, finalUrl]
+    [description, finalUrl]
   );
   return { name, description, categoryHint };
 }

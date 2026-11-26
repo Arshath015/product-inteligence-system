@@ -2,58 +2,16 @@ import * as cheerio from "cheerio";
 import { gunzipSync } from "node:zlib";
 import { BROWSER_HEADERS } from "@/lib/pageSignals";
 import type { PageSignals } from "@/lib/pageSignals";
-
-// ── word lists ───────────────────────────────────────────────────────────────
-
-/** Path segments that mark an individual product detail page. Multilingual. */
-const PRODUCT_WORD_SET = new Set([
-  // English
-  "product", "products", "piece", "pieces", "pdp", "item", "items",
-  "collectible", "collectibles",
-  // Italian
-  "prodotto", "prodotti",
-  // French
-  "produit", "produits",
-  // German
-  "produkt", "produkte",
-  // Spanish
-  "producto", "productos",
-]);
-
-/** Path segments typical of collection / category listing pages. Multilingual. */
-const COLLECTION_WORD_SET = new Set([
-  // English
-  "collection", "collections", "category", "categories", "catalogue", "catalog",
-  "range", "ranges", "series", "line", "lines", "furniture",
-  "seating", "sofas", "sofa", "chairs", "chair", "armchair", "armchairs", "lamp", "lamps",
-  "tables", "table", "beds", "bed", "storage", "bedroom", "living",
-  "dining", "outdoor", "accessories", "lighting", "wardrobes", "wardrobe",
-  "shelving", "shelves", "desks", "desk", "cabinets", "cabinet",
-  // Italian
-  "collezione", "collezioni", "arredamento", "divani", "poltrone",
-  "tavoli", "tavolini", "letti", "armadi", "complementi", "sedute", "sedie", "librerie",
-  "madie", "comodini", "cabine", "sistemi", "contenitori", "prodotti_categorie",
-  "product_category", "product-category",
-  // French
-  "mobilier", "meubles", "canapes", "fauteuils",
-  // German
-  "kollektion", "kollektionen", "moebel",
-  // Spanish
-  "coleccion", "colecciones", "muebles",
-]);
-
-/** Segments that definitively mark non-catalogue pages — always skip. */
-const SKIP_SET = new Set([
-  "gift-card", "giftcard", "voucher", "sample", "swatch",
-  "shipping", "delivery", "returns", "warranty",
-  "about", "contact", "press", "news", "blog", "career", "careers", "jobs",
-  "privacy", "cookies", "terms", "login", "register", "account",
-  "wishlist", "checkout", "cart", "search", "404", "sitemap",
-  "dealers", "dealer", "stores", "store-locator", "find-a-store",
-  "faq", "help", "support", "newsletter", "sustainability", "company",
-]);
-const SKIP_PREFIXES = ["notice-", "spare-parts", "about-", "contact-", "terms-", "privacy-", "faq-"];
-const CATEGORY_ROUTE_PREFIXES = ["clp-", "category-", "collection-"];
+import {
+  PRODUCT_WORD_SET,
+  isCategoryRoute,
+  isCollectionPathSegment,
+  isDeepProductUrl,
+  isProductPageUrl,
+  isSkippedSegment,
+  normalizedSegs,
+} from "@/lib/bulk/urlClassification";
+export { isProductPageUrl } from "@/lib/bulk/urlClassification";
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
@@ -63,72 +21,7 @@ function sameHost(a: string, b: string): boolean {
   } catch { return false; }
 }
 
-function pathSegs(url: string): string[] {
-  try { return new URL(url).pathname.toLowerCase().split("/").filter(Boolean); } catch { return []; }
-}
-
-function isSkippedSegment(segment: string): boolean {
-  const route = segment.startsWith("clp-") ? segment.slice(4) : segment;
-  return SKIP_SET.has(route) || SKIP_PREFIXES.some((prefix) => route.startsWith(prefix));
-}
-
-function isCategoryRoute(segment: string | undefined): boolean {
-  return Boolean(segment && CATEGORY_ROUTE_PREFIXES.some((prefix) => segment.startsWith(prefix)));
-}
-
-function normalizedSegs(url: string): string[] {
-  return pathSegs(url).map((segment) => segment.replace(/\.(?:html?|php)$/i, ""));
-}
-
-/**
- * Returns true when a URL sits deep under a collection hierarchy and the
- * final segment looks like a specific product, not a sub-category.
- * e.g. /en/collections/piuma/piuma-wardrobe-sliding-doors → true
- *      /en/collections/piuma/                              → false
- */
-function isDeepProductUrl(segs: string[]): boolean {
-  const normalized = segs.map((segment) => segment.replace(/\.(?:html?|php)$/i, ""));
-  const collIdx = normalized.findIndex((s) => COLLECTION_WORD_SET.has(s));
-  if (collIdx === -1) return false;
-  const afterColl = normalized.slice(collIdx + 1);
-  if (afterColl.length < 2) return false;
-  const slug = afterColl[afterColl.length - 1];
-  return (
-    slug.includes("-") &&
-    slug.length > 8 &&
-    !COLLECTION_WORD_SET.has(slug) &&
-    !isSkippedSegment(slug)
-  );
-}
-
 // ── public functions ─────────────────────────────────────────────────────────
-
-/**
- * Returns true when a URL path looks like a specific product detail page —
- * not a category, collection root, or non-catalogue page. Used both for
- * sitemap classification and for filtering Tavily search results.
- */
-export function isProductPageUrl(url: string): boolean {
-  try {
-    const segs = pathSegs(url);
-    if (segs.length === 0) return false;
-    const normalized = normalizedSegs(url);
-    if (normalized.some(isSkippedSegment)) return false;
-    const productIdx = normalized.findIndex((s) => PRODUCT_WORD_SET.has(s));
-    if (productIdx !== -1 && productIdx < segs.length - 1) return true;
-    if (isDeepProductUrl(normalized)) return true;
-    const leaf = normalized[normalized.length - 1];
-    const hasCollectionParent = normalized.slice(0, -1).some((segment) => COLLECTION_WORD_SET.has(segment));
-    return !hasCollectionParent &&
-      !isCategoryRoute(leaf) &&
-      /\.(?:html?|php)$/i.test(segs[segs.length - 1]) &&
-      leaf.split("-").filter(Boolean).length >= 3 &&
-      !COLLECTION_WORD_SET.has(leaf) &&
-      !isSkippedSegment(leaf);
-  } catch {
-    return false;
-  }
-}
 
 /**
  * Scans a page's links for individual product detail pages.
@@ -144,8 +37,7 @@ export function discoverProductLinks(signals: PageSignals, limit = 20): string[]
     if (found.length >= limit || !sameHost(href, signals.finalUrl) || seen.has(href)) return;
     const segs = normalizedSegs(href);
     if (segs.length === 0 || segs.some(isSkippedSegment)) return;
-    const productIdx = segs.findIndex((s) => PRODUCT_WORD_SET.has(s));
-    if ((productIdx === -1 || productIdx === segs.length - 1) && !isProductPageUrl(href)) return;
+    if (!isProductPageUrl(href)) return;
     seen.add(href);
     found.push(href);
   };
@@ -168,7 +60,7 @@ export function discoverProductLinks(signals: PageSignals, limit = 20): string[]
     const isProductList = inProductList || types.some((type) =>
       typeof type === "string" && ["itemlist", "offercatalog"].includes(type.toLowerCase())
     );
-    if (isProduct || isProductList) {
+    if (isProduct) {
       for (const value of [obj.url, obj["@id"]]) {
         if (typeof value === "string") {
           try {
@@ -180,7 +72,7 @@ export function discoverProductLinks(signals: PageSignals, limit = 20): string[]
       }
     }
     for (const [key, value] of Object.entries(obj)) {
-      if (key !== "@type") visitStructured(value, isProduct || isProductList);
+      if (key !== "@type") visitStructured(value, isProductList);
     }
   };
   signals.jsonLd.forEach((node) => visitStructured(node));
@@ -206,7 +98,14 @@ export function discoverCollectionLinks(signals: PageSignals, limit = 15): strin
     if (seen.has(href)) continue;
 
     let pathname: string;
-    try { pathname = new URL(href).pathname; } catch { continue; }
+    let parsedUrl: URL;
+    try {
+      parsedUrl = new URL(href);
+      pathname = parsedUrl.pathname;
+    } catch { continue; }
+    if ([...parsedUrl.searchParams.keys()].some((key) => !/^(page|paged|page_num|p|pg|offset|cursor)$/i.test(key))) {
+      continue;
+    }
     if (pathname === homePathname || pathname === "/" || pathname === "") continue;
 
     const segs = normalizedSegs(href);
@@ -226,11 +125,13 @@ export function discoverCollectionLinks(signals: PageSignals, limit = 15): strin
       continue;
     }
 
+    const linkText = signals.links.find((l) => l.href === href)?.text ?? "";
+    if (isProductPageUrl(href) && !isCollectionPathSegment(linkText.toLowerCase().trim())) continue;
     const collectionLabel = /products?|collections?|categories|catalog(?:ue)?|sofas?|chairs?|armchairs?|tables?|beds?|lighting|outdoor|divani|poltrone|tavoli|sedie|madie|librerie|prodotti|collezioni|cat[eé]gories|meubles|muebles/i;
     if (
-      segs.some((s) => COLLECTION_WORD_SET.has(s)) ||
+      segs.some((s) => isCollectionPathSegment(s)) ||
       isCategoryRoute(segs[segs.length - 1]) ||
-      collectionLabel.test(signals.links.find((l) => l.href === href)?.text ?? "")
+      collectionLabel.test(linkText)
     ) {
       seen.add(href);
       found.push(href);
@@ -300,13 +201,14 @@ export async function discoverFromSitemap(
   baseUrl: string,
   limit = 80,
   collectionLimit = 20,
+  localeUrl = baseUrl,
 ): Promise<{ productUrls: string[]; collectionUrls: string[]; truncated: boolean }> {
   let origin: string;
   try { origin = new URL(baseUrl).origin; } catch { return { productUrls: [], collectionUrls: [], truncated: false }; }
 
   // e.g. "en" for https://pianca.com/en/ — used to filter multi-language sitemaps
-  const preferredLang = detectLangPrefix(baseUrl);
-  const preferredLocale = getLocalePrefix(baseUrl);
+  const preferredLang = detectLangPrefix(localeUrl);
+  const preferredLocale = getLocalePrefix(localeUrl);
 
   async function fetchXml(url: string): Promise<string | null> {
     const ctrl = new AbortController();
@@ -328,30 +230,33 @@ export async function discoverFromSitemap(
 
   const robots = await fetchXml(`${origin}/robots.txt`);
   const sitemapRefs = (robots ?? "").match(/^sitemap:\s*\S+/gim)?.map((line) => line.replace(/^sitemap:\s*/i, "")) ?? [];
+  const sameOriginRefs = sitemapRefs.filter((url) => sameHost(url, baseUrl));
+  const otherOriginRefs = sitemapRefs.filter((url) => !sameHost(url, baseUrl));
   const candidates = [...new Set([
-    ...sitemapRefs,
-    `${origin}/sitemap.xml`,
-    `${origin}/sitemap.xml.gz`,
+    ...sameOriginRefs,
     `${origin}/sitemap_index.xml`,
+    `${origin}/sitemap.xml`,
     `${origin}/sitemap-index.xml`,
+    `${origin}/sitemap.xml.gz`,
+    ...otherOriginRefs,
   ])];
 
   const locs: string[] = [];
+  const collectionLocs: string[] = [];
+  let subSitemapsTruncated = false;
 
   /** Pick preferred sub-sitemaps: language-matched first, then product-named, then first-N. */
   function rankSubSitemaps(subs: string[], lang: string | null): string[] {
-    // Prefer subs that contain the preferred language code
+    const catalogPattern = /(?:products?|prodotti|produits?|produkte|productos?|catalog|catalogue|collection|product[_-]?categor|prodotti[_-]?categor)/i;
     const langPat = lang ? new RegExp(`[/_-]${lang}[/_.-]|[/_-]${lang}$`, "i") : null;
     const byLang = langPat ? subs.filter((s) => langPat.test(s.replace(/^https?:\/\/[^/]+/, ""))) : [];
-    if (byLang.length > 0) {
-      // Among language matches, prefer product-named ones
-      const prodMatch = byLang.filter((s) => /product|\bitem\b|catalog|catalogue|prodotti|categor/i.test(s));
-      return prodMatch.length > 0 ? prodMatch.slice(0, 5) : byLang.slice(0, 5);
-    }
-    // No language match — prefer product-named, else first 2
-    // NOTE: use \bitem\b so "sitemap" (which contains "item") doesn't match every sub-sitemap.
-    const prodSubs = subs.filter((s) => /product|\bitem\b|catalog|catalogue|prodotti|categor/i.test(s));
-    return prodSubs.length > 0 ? prodSubs.slice(0, 5) : subs.slice(0, 2);
+    const catalogSubs = subs.filter((s) => catalogPattern.test(s));
+    const ranked = catalogSubs.length > 0 ? catalogSubs : byLang.length > 0 ? byLang : subs.slice(0, 3);
+    const localeRanked = byLang.length > 0
+      ? [...ranked.filter((s) => byLang.includes(s)), ...ranked.filter((s) => !byLang.includes(s))]
+      : ranked;
+    if (localeRanked.length > 20) subSitemapsTruncated = true;
+    return localeRanked.slice(0, 20);
   }
 
   /** Extract `<sitemap>` or `<url>` loc entries that look like sitemap references. */
@@ -371,11 +276,35 @@ export async function discoverFromSitemap(
     return refs;
   }
 
+  function isCategorySitemap(url: string): boolean {
+    return /(?:product[_-]?categor|prodotti[_-]?categor|categorias|categories|category)/i.test(url);
+  }
+
+  function addUrlEntries($doc: ReturnType<typeof cheerio.load>, categorySitemap: boolean): void {
+    $doc("url").each((_, el) => {
+      const row = $doc(el);
+      const loc = row.children("loc").first().text().trim();
+      if (!loc) return;
+      const preferredAlternate = preferredLang
+        ? row.find("[hreflang]").toArray().find((alternate) => {
+            const lang = ($doc(alternate).attr("hreflang") ?? "").toLowerCase().split("-")[0];
+            return lang === preferredLang;
+          })
+        : undefined;
+      const selectedLoc = preferredAlternate
+        ? $doc(preferredAlternate).attr("href")?.trim() || loc
+        : loc;
+      (categorySitemap ? collectionLocs : locs).push(selectedLoc);
+    });
+  }
+
   for (const candidate of candidates) {
     const xml = await fetchXml(candidate);
     if (!xml) continue;
 
     const $ = cheerio.load(xml, { xmlMode: true });
+    const startingProductCount = locs.length;
+    const startingCollectionCount = collectionLocs.length;
 
     // ── Level 1: sitemap index? ───────────────────────────────────────────────
     const level1Subs = extractSubSitemapRefs($);
@@ -399,38 +328,37 @@ export async function discoverFromSitemap(
             const level3Subs = extractSubSitemapRefs($sub2);
             if (level3Subs.length > 0) {
               const toFetch3 = rankSubSitemaps(level3Subs, preferredLang);
-              for (const sub3 of toFetch3.slice(0, 2)) {
+              for (const sub3 of toFetch3) {
                 const sub3Xml = await fetchXml(sub3);
                 if (!sub3Xml) continue;
                 const $sub3 = cheerio.load(sub3Xml, { xmlMode: true });
-                $sub3("url > loc, Url > Loc, url loc").each((_, el) => {
-                  const loc = $sub3(el).text().trim();
-                  if (loc && !/\.xml(\?|$)/i.test(loc)) locs.push(loc);
-                });
+                addUrlEntries($sub3, isCategorySitemap(sub3));
               }
             } else {
-              $sub2("url > loc, Url > Loc, url loc").each((_, el) => {
-                const loc = $sub2(el).text().trim();
-                if (loc && !/\.xml(\?|$)/i.test(loc)) locs.push(loc);
-              });
+              addUrlEntries($sub2, isCategorySitemap(sub2));
             }
           }
         } else {
-          $sub("url > loc, Url > Loc, url loc").each((_, el) => {
-            const loc = $sub(el).text().trim();
-            if (loc && !/\.xml(\?|$)/i.test(loc)) locs.push(loc);
-          });
+          addUrlEntries($sub, isCategorySitemap(sub));
         }
       }
-      break;
+      if (
+        locs.slice(startingProductCount).some((url) => sameHost(url, baseUrl)) ||
+        collectionLocs.slice(startingCollectionCount).some((url) => sameHost(url, baseUrl))
+      ) break;
+      locs.length = startingProductCount;
+      collectionLocs.length = startingCollectionCount;
+      continue;
     }
 
     // ── Flat sitemap: regular <url> entries ───────────────────────────────────
-    $("url > loc, Url > Loc, url loc").each((_, el) => {
-      const loc = $(el).text().trim();
-      if (loc) locs.push(loc);
-    });
-    if (locs.length > 0) break;
+    addUrlEntries($, isCategorySitemap(candidate));
+    if (
+      locs.slice(startingProductCount).some((url) => sameHost(url, baseUrl)) ||
+      collectionLocs.slice(startingCollectionCount).some((url) => sameHost(url, baseUrl))
+    ) break;
+    locs.length = startingProductCount;
+    collectionLocs.length = startingCollectionCount;
   }
 
   // Keep one locale when a sitemap contains copies of the same catalogue for
@@ -462,21 +390,27 @@ export async function discoverFromSitemap(
         ...localeScopedLocs.filter((url) => detectLangPrefix(url) !== preferredLang),
       ]
     : localeScopedLocs;
+  const scopedCollectionLocs = collectionLocs.filter((url) => {
+      const locale = getLocalePrefix(url);
+      if (preferredLocale) return locale === preferredLocale || locale === null;
+      return locale === null || locale === dominantLocale;
+  });
 
   const productUrls: string[] = [];
   const collectionUrls: string[] = [];
-  let truncated = false;
+  let truncated = subSitemapsTruncated;
 
-  for (const loc of sortedLocs) {
+  for (const loc of [...sortedLocs, ...scopedCollectionLocs]) {
     if (!sameHost(loc, baseUrl)) continue;
 
     const segs = normalizedSegs(loc);
     if (segs.length === 0) continue;
     if (segs.some(isSkippedSegment)) continue;
 
-    const isProductPage = isProductPageUrl(loc);
+    const isCollectionSitemapUrl = collectionLocs.includes(loc);
+    const isProductPage = !isCollectionSitemapUrl && isProductPageUrl(loc);
     const isCollectionPage =
-      !isProductPage && (segs.some((s) => COLLECTION_WORD_SET.has(s)) || isCategoryRoute(segs[segs.length - 1]));
+      !isProductPage && (segs.some((s) => isCollectionPathSegment(s)) || isCategoryRoute(segs[segs.length - 1]));
 
     if (isProductPage && productUrls.length < limit) {
       productUrls.push(loc);

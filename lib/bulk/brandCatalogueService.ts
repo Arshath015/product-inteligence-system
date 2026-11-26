@@ -4,7 +4,7 @@
  * via an optional callback so the SSE route can push live updates.
  */
 import { getSupabaseAdmin } from "@/lib/supabase/server";
-import { fetchPageSignals, hasUsableSignal, BROWSER_HEADERS } from "@/lib/pageSignals";
+import { fetchPageSignals, hasUsableSignal } from "@/lib/pageSignals";
 import { extractProductFromUrl } from "@/lib/extraction";
 import { crawlBrandCatalogue } from "@/lib/bulk/brandCrawl";
 import { resolveBrandDetailed, resolveDesigner } from "@/lib/catalog";
@@ -27,16 +27,54 @@ export interface CatalogueProduct {
 }
 
 export type ExtractProgressEvent =
-  | { type: "phase"; phase: "discovering" | "pre_screening" | "extracting" | "done"; message: string }
-  | { type: "discovered"; total: number; brandId: string; brandName: string; alreadyExtracted: number }
-  | { type: "product"; product: CatalogueProduct; extracted: number; total: number; failed: number }
-  | { type: "skip"; url: string; extracted: number; total: number; failed: number }
-  | { type: "done"; extracted: number; total: number; failed: number; brandId: string; hasMore: boolean; truncated: boolean }
+  | { type: "phase"; phase: "discovering" | "extracting" | "done"; message: string }
+  | {
+      type: "discovered";
+      runId: string;
+      total: number;
+      brandId: string;
+      brandName: string;
+      alreadyExtracted: number;
+      processed: number;
+      added: number;
+      duplicates: number;
+      failed: number;
+      hasMore: boolean;
+    }
+  | { type: "product"; product: CatalogueProduct; processed: number; total: number; added: number; duplicates: number; failed: number }
+  | { type: "skip"; url: string; reason: string; processed: number; total: number; added: number; duplicates: number; failed: number }
+  | {
+      type: "done";
+      runId: string;
+      processed: number;
+      total: number;
+      added: number;
+      duplicates: number;
+      failed: number;
+      brandId: string;
+      hasMore: boolean;
+      retrying: boolean;
+      truncated: boolean;
+    }
   | { type: "error"; message: string };
 
-// Titles that identify "not found" pages even when the server returns HTTP 200.
-const SOFT_404_TITLE_RE =
-  /\b(404|page\s+not\s+found|pagina\s+non\s+trovata|page\s+introuvable|seite\s+nicht\s+gefunden|p[aá]gina\s+no\s+encontrada|page\s+does\s+not\s+exist)\b/i;
+interface BrandImportRun {
+  id: string;
+  source_url: string;
+  brand_id: string;
+  brand_name: string;
+  product_urls: string[];
+  failed_urls: string[];
+  failure_details: Record<string, string>;
+  discovery_truncated: boolean;
+  next_index: number;
+  processed_count: number;
+  added_count: number;
+  duplicate_count: number;
+  failed_count: number;
+}
+
+const MAX_PER_CALL = 20;
 
 async function runPool<T>(
   items: T[],
@@ -67,34 +105,6 @@ async function uniqueCatalogueSlug(brandId: string, base: string): Promise<strin
   return `${candidate}-${nanoid(6)}`;
 }
 
-/** Lightweight liveness check: fetches the first 2 KB to detect hard and soft 404s. */
-async function isAlive(url: string): Promise<boolean> {
-  try {
-    const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), 2000);
-    const res = await fetch(url, { headers: BROWSER_HEADERS, signal: ctrl.signal });
-    clearTimeout(timer);
-    if (!res.ok) return false;
-    const reader = res.body?.getReader();
-    if (!reader) { await res.body?.cancel(); return true; }
-    let chunk = "";
-    try {
-      while (chunk.length < 2048) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        chunk += new TextDecoder().decode(value);
-        if (chunk.includes("</title>")) break;
-      }
-    } finally {
-      reader.cancel().catch(() => {});
-    }
-    const title = chunk.match(/<title>([^<]+)/i)?.[1]?.trim() ?? "";
-    return !SOFT_404_TITLE_RE.test(title);
-  } catch {
-    return true;
-  }
-}
-
 /** Resolve or create the brand in the given project context. */
 async function resolveBrandForCatalogue(
   projectId: string,
@@ -119,199 +129,277 @@ export async function extractBrandCatalogue(
   brandUrl: string,
   onEvent: (event: ExtractProgressEvent) => void,
   options?: {
-    /**
-     * True when this is a client-triggered auto-resume (not the first call).
-     * On resume the client already has all previously extracted products in state,
-     * so we skip re-streaming them and start the counter from where it left off.
-     */
-    isResume?: boolean;
+    runId?: string;
+    retryFailed?: boolean;
   }
 ): Promise<void> {
   const supabase = getSupabaseAdmin();
 
   try {
-    onEvent({ type: "phase", phase: "discovering", message: "Fetching brand homepage…" });
+    let runId = options?.runId;
+    let run: BrandImportRun;
 
-    let homepageSignals = null;
-    try {
-      const fetched = await fetchPageSignals(brandUrl);
-      if (hasUsableSignal(fetched)) homepageSignals = fetched;
-    } catch {
-      // proceed without homepage signals
-    }
-
-    const brandNameGuess = (() => {
-      if (homepageSignals?.title) {
-        const first = homepageSignals.title.split(/[|\-–—]/)[0]?.trim();
-        if (first && first.length > 1 && first.length < 60) return first;
-      }
-      try { return new URL(brandUrl).hostname.replace(/^www\./, "").split(".")[0]; } catch { return "Brand"; }
-    })();
-
-    onEvent({ type: "phase", phase: "discovering", message: `Scanning ${brandNameGuess} catalogue…` });
-
-    const resolved = await resolveBrandForCatalogue(projectId, brandNameGuess, brandUrl);
-    if (!resolved) {
-      onEvent({ type: "error", message: "Could not identify a brand from that URL." });
-      return;
-    }
-
-    const crawl = await crawlBrandCatalogue(
-      brandUrl,
-      homepageSignals,
-      (msg) => onEvent({ type: "phase", phase: "discovering", message: msg }),
-      { maxProducts: 5000, maxCollections: 60 }
-    );
-
-    const rawUrls = crawl.productUrls;
-    if (rawUrls.length === 0) {
-      onEvent({ type: "error", message: "No product URLs found on this brand's website." });
-      return;
-    }
-
-    // Filter out URLs already extracted
-    const { data: existing } = await supabase
-      .from("brand_catalogue_products")
-      .select("source_url, id, name, slug, description, images, primary_image_url, category_id, category_name, extracted_at, brand_id")
-      .eq("brand_id", resolved.id)
-      .in("source_url", rawUrls);
-    const alreadyDoneSet = new Set((existing ?? []).map((r) => r.source_url as string));
-    const existingCount = (existing ?? []).length;
-
-    onEvent({ type: "discovered", total: rawUrls.length, brandId: resolved.id, brandName: resolved.name, alreadyExtracted: existingCount });
-
-    // On first call: stream already-known products so the client can populate its grid.
-    // On resume: client already has them — skip re-streaming to avoid counter confusion.
-    let streamedCount = 0;
-    if (!options?.isResume) {
-      for (const p of existing ?? []) {
-        onEvent({
-          type: "product",
-          product: p as unknown as CatalogueProduct,
-          extracted: ++streamedCount,
-          total: rawUrls.length,
-          failed: 0,
-        });
-      }
-    } else {
-      // Resume: start counter from where the previous batch ended
-      streamedCount = existingCount;
-    }
-
-    const toExtract = rawUrls.filter((u) => !alreadyDoneSet.has(u));
-
-    if (toExtract.length === 0) {
-      onEvent({ type: "done", extracted: streamedCount, total: rawUrls.length, failed: 0, brandId: resolved.id, hasMore: false, truncated: crawl.stats.truncated });
-      return;
-    }
-
-    // Cap per-call work so we fit within Vercel's 300s timeout.
-    // Auto-resume (client-side) handles remaining URLs in subsequent calls.
-    const MAX_PER_CALL = 20;
-    // On resume batches (some products already extracted) skip pre-screening —
-    // we've already identified dead URLs; extraction timeout handles any stragglers.
-    const isResumeBatch = streamedCount > 0;
-    let thisBatch: string[];
-    let deadCount: number;
-
-    if (isResumeBatch) {
-      thisBatch = toExtract.slice(0, MAX_PER_CALL);
-      deadCount = 0;
-      onEvent({ type: "phase", phase: "extracting", message: `Extracting next ${thisBatch.length} products…` });
-    } else {
-      const candidates = toExtract.slice(0, MAX_PER_CALL * 2); // screen 2× buffer (40) to find 20 live
-      onEvent({ type: "phase", phase: "pre_screening", message: `Pre-screening ${candidates.length} URLs…` });
-      const alive: string[] = [];
-      await runPool(candidates, 5, async (url) => {
-        if (alive.length < MAX_PER_CALL && await isAlive(url)) alive.push(url);
+    if (runId) {
+      const { data, error } = await supabase
+        .from("library_import_runs")
+        .select("*")
+        .eq("id", runId)
+        .eq("project_id", projectId)
+        .maybeSingle();
+      if (error || !data) throw new Error(error?.message ?? "Brand import run not found for this project.");
+      run = data as BrandImportRun;
+      onEvent({
+        type: "discovered",
+        runId,
+        total: run.product_urls.length,
+        brandId: run.brand_id,
+        brandName: run.brand_name,
+        alreadyExtracted: 0,
+        processed: run.processed_count,
+        added: run.added_count,
+        duplicates: run.duplicate_count,
+        failed: run.failed_count,
+        hasMore: run.next_index < run.product_urls.length,
       });
-      thisBatch = alive.slice(0, MAX_PER_CALL);
-      deadCount = candidates.length - alive.length;
-      onEvent({ type: "phase", phase: "extracting", message: `Extracting ${thisBatch.length} products…` });
+    } else {
+      onEvent({ type: "phase", phase: "discovering", message: "Fetching brand homepage…" });
+
+      const homepageSignals = await fetchPageSignals(brandUrl).catch(() => null);
+      const usableHomepage = homepageSignals && hasUsableSignal(homepageSignals) ? homepageSignals : null;
+      const brandNameGuess = (() => {
+        const first = usableHomepage?.title?.split(/[|\-–—]/)[0]?.trim();
+        if (first && first.length > 1 && first.length < 60) return first;
+        try { return new URL(brandUrl).hostname.replace(/^www\./, "").split(".")[0]; } catch { return "Brand"; }
+      })();
+
+      onEvent({ type: "phase", phase: "discovering", message: `Scanning ${brandNameGuess} catalogue…` });
+      const resolved = await resolveBrandForCatalogue(projectId, brandNameGuess, brandUrl);
+      if (!resolved) throw new Error("Could not identify a brand from that URL.");
+
+      const crawl = await crawlBrandCatalogue(
+        brandUrl,
+        usableHomepage,
+        (msg) => onEvent({ type: "phase", phase: "discovering", message: msg }),
+        { maxProducts: 5000, maxCollections: 60 },
+      );
+      if (crawl.productUrls.length === 0) {
+        throw new Error("No individual product pages were discovered. Try a category URL or retry after the site catalogue becomes available.");
+      }
+
+      const { data, error } = await supabase
+        .from("library_import_runs")
+        .insert({
+          source_url: brandUrl,
+          brand_name: resolved.name,
+          brand_id: resolved.id,
+          project_id: projectId,
+          product_urls: crawl.productUrls,
+          discovery_truncated: crawl.stats.truncated,
+          status: "ready",
+        })
+        .select("*")
+        .single();
+      if (error || !data) throw new Error(error?.message ?? "Could not create the brand import run.");
+      run = data as BrandImportRun;
+      runId = run.id;
+
+      onEvent({
+        type: "discovered",
+        runId,
+        total: run.product_urls.length,
+        brandId: resolved.id,
+        brandName: resolved.name,
+        alreadyExtracted: 0,
+        processed: run.processed_count,
+        added: run.added_count,
+        duplicates: run.duplicate_count,
+        failed: run.failed_count,
+        hasMore: run.next_index < run.product_urls.length,
+      });
     }
 
-    let extracted = streamedCount;
-    let failed = deadCount;
-    const total = rawUrls.length;
+    const retrying = options?.retryFailed === true;
+    let failedUrls = new Set(Array.isArray(run.failed_urls) ? run.failed_urls : []);
+    const failureDetails = { ...(run.failure_details ?? {}) };
+    const retryQueue = [...failedUrls];
+    const batch = retrying
+      ? retryQueue.slice(0, MAX_PER_CALL)
+      : run.product_urls.slice(run.next_index, run.next_index + MAX_PER_CALL);
+    onEvent({
+      type: "phase",
+      phase: "extracting",
+      message: retrying ? `Retrying ${batch.length} failed page(s)…` : `Extracting ${batch.length} product page(s)…`,
+    });
 
-    // Look up all categories once for fast resolution
-    const { data: cats } = await supabase.from("categories").select("id, slug, name");
-    const catBySlug = new Map((cats ?? []).map((c) => [c.slug as string, c.id as string]));
-    const catByName = new Map((cats ?? []).map((c) => [(c.name as string).toLowerCase(), c.id as string]));
+    const { data: categories, error: categoriesError } = await supabase.from("categories").select("id, slug, name");
+    if (categoriesError) throw new Error(categoriesError.message);
+    const categoryBySlug = new Map((categories ?? []).map((row) => [row.slug as string, row.id as string]));
+    const categoryByName = new Map((categories ?? []).map((row) => [(row.name as string).toLowerCase(), row.id as string]));
 
-    await runPool(thisBatch, 5, async (url) => {
-      try {
-        const data: ExtractedProductData = await Promise.race([
-          extractProductFromUrl(url),
-          new Promise<never>((_, reject) =>
-            setTimeout(() => reject(new Error("extraction timeout")), 18000)
-          ),
-        ]);
-        if (!data.name.trim()) {
-          failed++;
-          onEvent({ type: "skip", url, extracted: ++extracted, total, failed });
-          return;
-        }
-
-        // Resolve category
-        let categoryId: string | null = null;
-        if (data.categoryHint) {
-          const hintLower = data.categoryHint.toLowerCase();
-          categoryId = catBySlug.get(hintLower) ?? catByName.get(hintLower) ?? null;
-        }
-
-        const slug = await uniqueCatalogueSlug(resolved.id, data.name);
-        const images = data.imageUrls ?? [];
-
-        const row = {
-          brand_id: resolved.id,
-          brand_name: resolved.name,
-          brand_website_url: brandUrl,
-          designer_name: data.designerName,
-          name: data.name,
-          slug,
-          source_url: url,
-          description: data.description ?? null,
-          materials: data.materials ?? null,
-          dimensions: data.dimensions ?? null,
-          price_text: data.priceText ?? null,
-          images,
-          primary_image_url: images[0] ?? null,
-          category_id: categoryId,
-          category_name: data.categoryHint ?? null,
-          image_status: images.length > 0 ? "pending" : "missing",
-        };
-
-        const { data: saved, error } = await supabase
+    const { data: existingBatch, error: existingBatchError } = batch.length > 0
+      ? await supabase
           .from("brand_catalogue_products")
-          .upsert(row, { onConflict: "source_url", ignoreDuplicates: false })
-          .select()
-          .single();
+          .select("source_url, id, name, slug, description, images, primary_image_url, category_id, category_name, extracted_at, brand_id")
+          .in("source_url", batch)
+      : { data: [], error: null };
+    if (existingBatchError) throw new Error(existingBatchError.message);
+    const existingByUrl = new Map((existingBatch ?? []).map((row) => [row.source_url as string, row]));
 
-        if (error || !saved) {
-          failed++;
-          onEvent({ type: "skip", url, extracted: ++extracted, total, failed });
-          return;
+    let addedDelta = 0;
+    let duplicatesDelta = 0;
+    let processedInBatch = 0;
+    let progressProcessed = run.processed_count;
+    const markProcessed = () => {
+      processedInBatch++;
+      progressProcessed = retrying ? run.processed_count : run.processed_count + processedInBatch;
+    };
+
+    await runPool(batch, 5, async (url) => {
+      try {
+        const existing = existingByUrl.get(url);
+        if (existing) {
+          duplicatesDelta++;
+          failedUrls.delete(url);
+          delete failureDetails[url];
+          markProcessed();
+          if (existing.brand_id === run.brand_id) {
+            onEvent({
+              type: "product",
+              product: existing as unknown as CatalogueProduct,
+              processed: progressProcessed,
+              total: run.product_urls.length,
+              added: run.added_count + addedDelta,
+              duplicates: run.duplicate_count + duplicatesDelta,
+              failed: failedUrls.size,
+            });
+          }
+        } else {
+          const extracted: ExtractedProductData = await Promise.race([
+            extractProductFromUrl(url),
+            new Promise<never>((_, reject) =>
+              setTimeout(() => reject(new Error("Product extraction timed out after 18 seconds.")), 18000)
+            ),
+          ]);
+          if (!extracted.name.trim()) throw new Error("Page did not contain a product name.");
+
+          const hint = extracted.categoryHint?.toLowerCase() ?? "";
+          const categoryId = categoryBySlug.get(hint) ?? categoryByName.get(hint) ?? null;
+          const images = extracted.imageUrls ?? [];
+          const row = {
+            brand_id: run.brand_id,
+            brand_name: run.brand_name,
+            brand_website_url: run.source_url,
+            designer_name: extracted.designerName,
+            name: extracted.name,
+            slug: await uniqueCatalogueSlug(run.brand_id, extracted.name),
+            source_url: url,
+            description: extracted.description ?? null,
+            materials: extracted.materials ?? null,
+            dimensions: extracted.dimensions ?? null,
+            price_text: extracted.priceText ?? null,
+            images,
+            primary_image_url: images[0] ?? null,
+            category_id: categoryId,
+            category_name: extracted.categoryHint ?? null,
+            image_status: images.length > 0 ? "pending" : "missing",
+          };
+          const { data: saved, error } = await supabase
+            .from("brand_catalogue_products")
+            .upsert(row, { onConflict: "source_url", ignoreDuplicates: true })
+            .select()
+            .maybeSingle();
+          if (error) throw new Error(error.message);
+          if (!saved) {
+            duplicatesDelta++;
+          } else {
+            addedDelta++;
+          }
+          failedUrls.delete(url);
+          delete failureDetails[url];
+          markProcessed();
+          if (saved) {
+            onEvent({
+              type: "product",
+              product: saved as unknown as CatalogueProduct,
+              processed: progressProcessed,
+              total: run.product_urls.length,
+              added: run.added_count + addedDelta,
+              duplicates: run.duplicate_count + duplicatesDelta,
+              failed: failedUrls.size,
+            });
+          }
         }
-
+      } catch (error) {
+        const reason = error instanceof Error ? error.message : String(error);
+        failedUrls.add(url);
+        failureDetails[url] = reason;
+        markProcessed();
         onEvent({
-          type: "product",
-          product: saved as unknown as CatalogueProduct,
-          extracted: ++extracted,
-          total,
-          failed,
+          type: "skip",
+          url,
+          reason,
+          processed: progressProcessed,
+          total: run.product_urls.length,
+          added: run.added_count + addedDelta,
+          duplicates: run.duplicate_count + duplicatesDelta,
+          failed: failedUrls.size,
         });
-      } catch {
-        failed++;
-        onEvent({ type: "skip", url, extracted: ++extracted, total, failed });
       }
     });
 
-    // hasMore = true when more unprocessed URLs remain beyond this batch
-    const hasMore = toExtract.length > MAX_PER_CALL;
-    onEvent({ type: "done", extracted, total, failed, brandId: resolved.id, hasMore, truncated: crawl.stats.truncated });
+    if (retrying) {
+      const currentBatch = new Set(batch);
+      failedUrls = new Set([
+        ...retryQueue.filter((url) => !currentBatch.has(url) && failedUrls.has(url)),
+        ...retryQueue.filter((url) => currentBatch.has(url) && failedUrls.has(url)),
+      ]);
+    }
+
+    const nextIndex = retrying ? run.next_index : run.next_index + batch.length;
+    const hasMore = nextIndex < run.product_urls.length;
+    const { data: updated, error: updateError } = await supabase
+      .from("library_import_runs")
+      .update({
+        next_index: nextIndex,
+        failed_urls: [...failedUrls],
+        failure_details: failureDetails,
+        processed_count: retrying ? run.processed_count : run.processed_count + batch.length,
+        added_count: run.added_count + addedDelta,
+        duplicate_count: run.duplicate_count + duplicatesDelta,
+        failed_count: failedUrls.size,
+        status: nextIndex >= run.product_urls.length ? "complete" : "ready",
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", run.id)
+      .eq("project_id", projectId)
+      .select("*")
+      .single();
+    if (updateError || !updated) throw new Error(updateError?.message ?? "Could not save brand import progress.");
+
+    const savedRun = updated as BrandImportRun;
+    const { data: currentBrand, error: brandError } = await supabase
+      .from("brands")
+      .select("id")
+      .eq("id", savedRun.brand_id)
+      .eq("project_id", projectId)
+      .maybeSingle();
+    if (brandError) throw new Error(brandError.message);
+    if (!currentBrand) throw new Error("The brand linked to this import run no longer exists.");
+    onEvent({
+      type: "done",
+      runId: savedRun.id,
+      processed: savedRun.processed_count,
+      total: savedRun.product_urls.length,
+      added: savedRun.added_count,
+      duplicates: savedRun.duplicate_count,
+      failed: savedRun.failed_count,
+      brandId: savedRun.brand_id,
+      hasMore,
+      retrying,
+      truncated: savedRun.discovery_truncated,
+    });
   } catch (err) {
-    onEvent({ type: "error", message: (err as Error).message });
+    onEvent({ type: "error", message: err instanceof Error ? err.message : String(err) });
   }
 }
 
